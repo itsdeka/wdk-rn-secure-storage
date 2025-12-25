@@ -349,12 +349,10 @@ export function createSecureStorage(): SecureStorage {
      * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
     async deleteWallet(identifier?: string): Promise<void> {
-      const encryptionKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
       const encryptedSeed = getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
       const encryptedEntropy = getStorageKey(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier)
       
       await Promise.all([
-        Keychain.resetGenericPassword({ service: encryptionKey }),
         Keychain.resetGenericPassword({ service: encryptedSeed }),
         Keychain.resetGenericPassword({ service: encryptedEntropy }),
       ])
