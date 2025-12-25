@@ -2,7 +2,7 @@ import * as Keychain from 'react-native-keychain'
 import * as LocalAuthentication from 'expo-local-authentication'
 
 /**
- * Secure storage keys
+ * Secure storage keys (base keys without identifier)
  */
 const STORAGE_KEYS = {
   ENCRYPTION_KEY: 'wallet_encryption_key',
@@ -11,19 +11,37 @@ const STORAGE_KEYS = {
 } as const
 
 /**
+ * Generate storage key with optional identifier
+ * If identifier is provided, appends it to the base key
+ * Otherwise returns the base key for backward compatibility
+ */
+function getStorageKey(baseKey: string, identifier?: string): string {
+  if (!identifier || identifier.trim() === '') {
+    return baseKey
+  }
+  // Normalize identifier: lowercase and trim
+  const normalizedIdentifier = identifier.toLowerCase().trim()
+  return `${baseKey}_${normalizedIdentifier}`
+}
+
+/**
  * Secure storage interface
+ * 
+ * All methods accept an optional identifier parameter to support multiple wallets.
+ * When identifier is provided, it's used to create unique storage keys for each wallet.
+ * When identifier is undefined or empty, default keys are used (backward compatibility).
  */
 export interface SecureStorage {
   isBiometricAvailable(): Promise<boolean>
   authenticate(): Promise<boolean>
-  setEncryptionKey(key: string): Promise<void>
-  getEncryptionKey(): Promise<string | null>
-  setEncryptedSeed(encryptedSeed: string): Promise<void>
-  getEncryptedSeed(): Promise<string | null>
-  setEncryptedEntropy(encryptedEntropy: string): Promise<void>
-  getEncryptedEntropy(): Promise<string | null>
-  hasWallet(): Promise<boolean>
-  deleteWallet(): Promise<void>
+  setEncryptionKey(key: string, identifier?: string): Promise<void>
+  getEncryptionKey(identifier?: string): Promise<string | null>
+  setEncryptedSeed(encryptedSeed: string, identifier?: string): Promise<void>
+  getEncryptedSeed(identifier?: string): Promise<string | null>
+  setEncryptedEntropy(encryptedEntropy: string, identifier?: string): Promise<void>
+  getEncryptedEntropy(identifier?: string): Promise<string | null>
+  hasWallet(identifier?: string): Promise<boolean>
+  deleteWallet(identifier?: string): Promise<void>
 }
 
 /**
@@ -119,6 +137,9 @@ export function createSecureStorage(): SecureStorage {
     /**
      * Store encryption key securely
      * 
+     * @param key - The encryption key to store
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
+     * 
      * SECURITY: Data is ALWAYS encrypted at rest by Keychain (iOS) / KeyStore (Android).
      * With WHEN_UNLOCKED accessibility, the key will:
      * - Sync to iCloud Keychain (iOS) when user is signed into iCloud
@@ -128,11 +149,12 @@ export function createSecureStorage(): SecureStorage {
      * 
      * This allows seamless device migration while maintaining strong security.
      */
-    async setEncryptionKey(key: string): Promise<void> {
+    async setEncryptionKey(key: string, identifier?: string): Promise<void> {
       const deviceAuthAvailable = await isDeviceAuthenticationAvailable()
+      const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
       
       await Keychain.setGenericPassword(STORAGE_KEYS.ENCRYPTION_KEY, key, {
-        service: STORAGE_KEYS.ENCRYPTION_KEY,
+        service: storageKey,
         accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED, // Enables iCloud Keychain sync
         // Only set accessControl if device authentication is available
         // Without accessControl, data is still encrypted at rest but doesn't require authentication
@@ -145,11 +167,13 @@ export function createSecureStorage(): SecureStorage {
     /**
      * Get encryption key from secure storage
      * 
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
+     * 
      * SECURITY: Data is encrypted at rest by Keychain (iOS) / KeyStore (Android).
      * Biometric authentication is enforced if available.
      * Data may be synced from iCloud Keychain (iOS) or Google Cloud (Android) on new devices.
      */
-    async getEncryptionKey(): Promise<string | null> {
+    async getEncryptionKey(identifier?: string): Promise<string | null> {
       try {
         console.log('🔐 Getting encryption key - checking authentication availability...')
         
@@ -176,9 +200,10 @@ export function createSecureStorage(): SecureStorage {
         }
 
         // Retrieve key - will require authentication based on accessControl settings
-        console.log('🔐 Retrieving encryption key from secure storage...')
+        const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
+        console.log('🔐 Retrieving encryption key from secure storage...', identifier ? `(identifier: ${identifier})` : '(default)')
         const credentials = await Keychain.getGenericPassword({
-          service: STORAGE_KEYS.ENCRYPTION_KEY,
+          service: storageKey,
         })
         
         if (!credentials) {
@@ -196,21 +221,28 @@ export function createSecureStorage(): SecureStorage {
 
     /**
      * Store encrypted seed securely
+     * 
+     * @param encryptedSeed - The encrypted seed to store
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
-    async setEncryptedSeed(encryptedSeed: string): Promise<void> {
+    async setEncryptedSeed(encryptedSeed: string, identifier?: string): Promise<void> {
+      const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
       await Keychain.setGenericPassword(STORAGE_KEYS.ENCRYPTED_SEED, encryptedSeed, {
-        service: STORAGE_KEYS.ENCRYPTED_SEED,
+        service: storageKey,
         accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED, // Enables iCloud Keychain sync
       })
     },
 
     /**
      * Get encrypted seed from secure storage
+     * 
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
-    async getEncryptedSeed(): Promise<string | null> {
+    async getEncryptedSeed(identifier?: string): Promise<string | null> {
       try {
+        const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
         const credentials = await Keychain.getGenericPassword({
-          service: STORAGE_KEYS.ENCRYPTED_SEED,
+          service: storageKey,
         })
         return credentials ? credentials.password : null
       } catch (error) {
@@ -221,21 +253,28 @@ export function createSecureStorage(): SecureStorage {
 
     /**
      * Store encrypted entropy securely
+     * 
+     * @param encryptedEntropy - The encrypted entropy to store
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
-    async setEncryptedEntropy(encryptedEntropy: string): Promise<void> {
+    async setEncryptedEntropy(encryptedEntropy: string, identifier?: string): Promise<void> {
+      const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier)
       await Keychain.setGenericPassword(STORAGE_KEYS.ENCRYPTED_ENTROPY, encryptedEntropy, {
-        service: STORAGE_KEYS.ENCRYPTED_ENTROPY,
+        service: storageKey,
         accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED, // Enables iCloud Keychain sync
       })
     },
 
     /**
      * Get encrypted entropy from secure storage
+     * 
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
-    async getEncryptedEntropy(): Promise<string | null> {
+    async getEncryptedEntropy(identifier?: string): Promise<string | null> {
       try {
+        const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier)
         const credentials = await Keychain.getGenericPassword({
-          service: STORAGE_KEYS.ENCRYPTED_ENTROPY,
+          service: storageKey,
         })
         return credentials ? credentials.password : null
       } catch (error) {
@@ -246,17 +285,20 @@ export function createSecureStorage(): SecureStorage {
 
     /**
      * Check if wallet credentials exist (without requiring biometric authentication)
+     * 
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
-    async hasWallet(): Promise<boolean> {
+    async hasWallet(identifier?: string): Promise<boolean> {
       try {
-        const encryptedSeed = await this.getEncryptedSeed()
+        const encryptedSeed = await this.getEncryptedSeed(identifier)
         if (!encryptedSeed) {
           return false
         }
 
         try {
+          const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
           const credentials = await Keychain.getGenericPassword({
-            service: STORAGE_KEYS.ENCRYPTION_KEY,
+            service: storageKey,
             authenticationPrompt: {
               title: 'Authenticate',
               cancel: 'Cancel',
@@ -274,12 +316,18 @@ export function createSecureStorage(): SecureStorage {
 
     /**
      * Delete all wallet credentials
+     * 
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      */
-    async deleteWallet(): Promise<void> {
+    async deleteWallet(identifier?: string): Promise<void> {
+      const encryptionKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
+      const encryptedSeed = getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
+      const encryptedEntropy = getStorageKey(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier)
+      
       await Promise.all([
-        Keychain.resetGenericPassword({ service: STORAGE_KEYS.ENCRYPTION_KEY }),
-        Keychain.resetGenericPassword({ service: STORAGE_KEYS.ENCRYPTED_SEED }),
-        Keychain.resetGenericPassword({ service: STORAGE_KEYS.ENCRYPTED_ENTROPY }),
+        Keychain.resetGenericPassword({ service: encryptionKey }),
+        Keychain.resetGenericPassword({ service: encryptedSeed }),
+        Keychain.resetGenericPassword({ service: encryptedEntropy }),
       ])
     },
   }
