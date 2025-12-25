@@ -40,6 +40,11 @@ export interface SecureStorage {
   getEncryptedSeed(identifier?: string): Promise<string | null>
   setEncryptedEntropy(encryptedEntropy: string, identifier?: string): Promise<void>
   getEncryptedEntropy(identifier?: string): Promise<string | null>
+  getAllEncrypted(identifier?: string): Promise<{
+    seed: string | null
+    entropy: string | null
+    encryptionKey: string | null
+  }>
   hasWallet(identifier?: string): Promise<boolean>
   deleteWallet(identifier?: string): Promise<void>
 }
@@ -280,6 +285,30 @@ export function createSecureStorage(): SecureStorage {
       } catch (error) {
         console.error('Failed to get encrypted entropy:', error)
         return null
+      }
+    },
+
+    /**
+     * Get all encrypted wallet data at once (seed, entropy, and encryption key)
+     * 
+     * @param identifier - Optional identifier (e.g., email) to support multiple wallets
+     * @returns Object containing seed, entropy, and encryptionKey (may be null if not found)
+     */
+    async getAllEncrypted(identifier?: string): Promise<{
+      seed: string | null
+      entropy: string | null
+      encryptionKey: string | null
+    }> {
+      const [seed, entropy, encryptionKey] = await Promise.all([
+        this.getEncryptedSeed(identifier),
+        this.getEncryptedEntropy(identifier),
+        this.getEncryptionKey(identifier),
+      ])
+
+      return {
+        seed,
+        entropy,
+        encryptionKey,
       }
     },
 
