@@ -41,8 +41,8 @@ export interface SecureStorage {
   setEncryptedEntropy(encryptedEntropy: string, identifier?: string): Promise<void>
   getEncryptedEntropy(identifier?: string): Promise<string | null>
   getAllEncrypted(identifier?: string): Promise<{
-    seed: string | null
-    entropy: string | null
+    encryptedSeed: string | null
+    encryptedEntropy: string | null
     encryptionKey: string | null
   }>
   hasWallet(identifier?: string): Promise<boolean>
@@ -295,19 +295,19 @@ export function createSecureStorage(): SecureStorage {
      * @returns Object containing seed, entropy, and encryptionKey (may be null if not found)
      */
     async getAllEncrypted(identifier?: string): Promise<{
-      seed: string | null
-      entropy: string | null
+      encryptedSeed: string | null
+      encryptedEntropy: string | null
       encryptionKey: string | null
     }> {
-      const [seed, entropy, encryptionKey] = await Promise.all([
+      const [encryptedSeed, encryptedEntropy, encryptionKey] = await Promise.all([
         this.getEncryptedSeed(identifier),
         this.getEncryptedEntropy(identifier),
         this.getEncryptionKey(identifier),
       ])
 
       return {
-        seed,
-        entropy,
+        encryptedSeed,
+        encryptedEntropy,
         encryptionKey,
       }
     },
