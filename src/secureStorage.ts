@@ -539,25 +539,34 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
       validateIdentifier(identifier)
 
       try {
-        const encryptedSeed = await this.getEncryptedSeed(identifier)
-        if (!encryptedSeed) {
-          return false
-        }
-
-        const storageKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
-        const credentials = await withTimeout(
+        // Check if encrypted seed exists WITHOUT authentication
+        // We're only checking existence, not reading sensitive data
+        const seedStorageKey = getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
+        const seedCredentials = await withTimeout(
           Keychain.getGenericPassword({
-            service: storageKey,
-            authenticationPrompt: {
-              title: 'Authenticate',
-              cancel: 'Cancel',
-            },
+            service: seedStorageKey,
+            // NO authenticationPrompt - we're just checking existence
           }),
           timeoutMs,
           'hasWallet'
         )
 
-        return credentials !== false
+        if (seedCredentials === false) {
+          return false
+        }
+
+        // Also check encryption key exists
+        const encryptionKeyStorageKey = getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
+        const encryptionKeyCredentials = await withTimeout(
+          Keychain.getGenericPassword({
+            service: encryptionKeyStorageKey,
+            // NO authenticationPrompt - we're just checking existence
+          }),
+          timeoutMs,
+          'hasWallet'
+        )
+
+        return encryptionKeyCredentials !== false
       } catch (error) {
         // If it's an authentication error or not found, return false
         if (error instanceof AuthenticationError || error instanceof TimeoutError) {
