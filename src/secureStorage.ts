@@ -115,7 +115,8 @@ const DEFAULT_TIMEOUT_MS = 30000
  * - Data is ALWAYS encrypted at rest by Keychain (iOS) / KeyStore (Android)
  * - Cloud sync: ACCESSIBLE.WHEN_UNLOCKED enables iCloud Keychain sync (iOS) and Google Cloud backup (Android)
  * - Data is encrypted by Apple/Google's E2EE infrastructure
- * - Requires device unlock + biometric/PIN authentication to access (when available)
+ * - Encryption key requires device unlock + biometric/PIN authentication to access (when available)
+ * - Encrypted seed and entropy do not require authentication but are still encrypted at rest
  * - On devices without authentication, data is still encrypted at rest but accessible when device is unlocked
  * - Rate limiting prevents brute force attacks
  * - Input validation prevents injection attacks
@@ -163,10 +164,10 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
   /**
    * Create keychain options with conditional access control
    */
-  function createKeychainOptions(deviceAuthAvailable: boolean): Parameters<typeof Keychain.setGenericPassword>[2] {
+  function createKeychainOptions(deviceAuthAvailable: boolean, requireAuth: boolean = true): Parameters<typeof Keychain.setGenericPassword>[2] {
     return {
       accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
-      ...(deviceAuthAvailable && {
+      ...(requireAuth && deviceAuthAvailable && {
         accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY_OR_DEVICE_PASSCODE
       }),
     }
@@ -223,7 +224,8 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
   async function setSecureValue(
     baseKey: StorageKey,
     value: string,
-    identifier?: string
+    identifier?: string,
+    requireAuth: boolean = true
   ): Promise<void> {
     // Validate inputs
     validateValue(value, 'value')
@@ -233,11 +235,11 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
       const deviceAuthAvailable = await isDeviceAuthenticationAvailable()
       const storageKey = getStorageKey(baseKey, identifier)
 
-      logger.debug('Storing secure value', { baseKey, hasIdentifier: !!identifier })
+      logger.debug('Storing secure value', { baseKey, hasIdentifier: !!identifier, requireAuth })
 
       const keychainPromise = Keychain.setGenericPassword(baseKey, value, {
         service: storageKey,
-        ...createKeychainOptions(deviceAuthAvailable),
+        ...createKeychainOptions(deviceAuthAvailable, requireAuth),
       })
 
       const result = await withTimeout(
@@ -281,23 +283,26 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
   async function getSecureValue(
     baseKey: StorageKey,
     identifier: string | undefined,
-    storage: SecureStorage
+    storage: SecureStorage,
+    requireAuth: boolean = true
   ): Promise<string | null> {
     // Validate identifier
     validateIdentifier(identifier)
 
     try {
-      const authenticated = await authenticateIfAvailable(storage, identifier)
-      if (!authenticated) {
-        // Authentication failed - throw error instead of returning null
-        // This allows calling code to distinguish between auth failure (don't delete wallet)
-        // and key not found (different scenario)
-        const authError = new AuthenticationError(
-          'Authentication required but failed',
-          undefined
-        )
-        logger.warn('Authentication required but failed', { baseKey, identifier })
-        throw authError
+      if (requireAuth) {
+        const authenticated = await authenticateIfAvailable(storage, identifier)
+        if (!authenticated) {
+          // Authentication failed - throw error instead of returning null
+          // This allows calling code to distinguish between auth failure (don't delete wallet)
+          // and key not found (different scenario)
+          const authError = new AuthenticationError(
+            'Authentication required but failed',
+            undefined
+          )
+          logger.warn('Authentication required but failed', { baseKey, identifier })
+          throw authError
+        }
       }
 
       const storageKey = getStorageKey(baseKey, identifier)
@@ -452,9 +457,11 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {ValidationError} If identifier is invalid format
      * @throws {KeychainWriteError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
+     * 
+     * Note: Encrypted seed does not require authentication for access
      */
     async setEncryptedSeed(encryptedSeed: string, identifier?: string): Promise<void> {
-      return setSecureValue(STORAGE_KEYS.ENCRYPTED_SEED, encryptedSeed, identifier)
+      return setSecureValue(STORAGE_KEYS.ENCRYPTED_SEED, encryptedSeed, identifier, false)
     },
 
     /**
@@ -464,12 +471,13 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @returns The encrypted seed, or null if not found
      * 
      * @throws {ValidationError} If identifier is invalid format
-     * @throws {AuthenticationError} If authentication fails or rate limit exceeded
      * @throws {KeychainReadError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
+     * 
+     * Note: Encrypted seed does not require authentication for access
      */
     async getEncryptedSeed(identifier?: string): Promise<string | null> {
-      return getSecureValue(STORAGE_KEYS.ENCRYPTED_SEED, identifier, this)
+      return getSecureValue(STORAGE_KEYS.ENCRYPTED_SEED, identifier, this, false)
     },
 
     /**
@@ -482,9 +490,11 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {ValidationError} If identifier is invalid format
      * @throws {KeychainWriteError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
+     * 
+     * Note: Encrypted entropy does not require authentication for access
      */
     async setEncryptedEntropy(encryptedEntropy: string, identifier?: string): Promise<void> {
-      return setSecureValue(STORAGE_KEYS.ENCRYPTED_ENTROPY, encryptedEntropy, identifier)
+      return setSecureValue(STORAGE_KEYS.ENCRYPTED_ENTROPY, encryptedEntropy, identifier, false)
     },
 
     /**
@@ -494,12 +504,13 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @returns The encrypted entropy, or null if not found
      * 
      * @throws {ValidationError} If identifier is invalid format
-     * @throws {AuthenticationError} If authentication fails or rate limit exceeded
      * @throws {KeychainReadError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
+     * 
+     * Note: Encrypted entropy does not require authentication for access
      */
     async getEncryptedEntropy(identifier?: string): Promise<string | null> {
-      return getSecureValue(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier, this)
+      return getSecureValue(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier, this, false)
     },
 
     /**
