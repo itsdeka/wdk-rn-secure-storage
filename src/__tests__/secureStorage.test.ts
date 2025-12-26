@@ -234,16 +234,21 @@ describe('SecureStorage', () => {
       expect(seed).toBeNull()
     })
 
-    it('should throw AuthenticationError when authentication fails', async () => {
-      mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
-      mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
-      mockLocalAuth.authenticateAsync.mockResolvedValue({ 
-        success: false, 
-        error: 'user_cancel' 
+    it('should retrieve seed without authentication even when auth would fail', async () => {
+      // Encrypted seed does not require authentication
+      mockKeychain.getGenericPassword.mockResolvedValue({
+        service: 'test',
+        username: 'wallet_encrypted_seed',
+        password: 'test-seed',
+        storage: Keychain.STORAGE_TYPE.AES_GCM,
       })
 
-      await expect(storage.getEncryptedSeed()).rejects.toThrow(AuthenticationError)
-      expect(mockKeychain.getGenericPassword).not.toHaveBeenCalled()
+      const seed = await storage.getEncryptedSeed()
+
+      expect(seed).toBe('test-seed')
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalled()
+      // Should not call authentication since seed doesn't require it
+      expect(mockLocalAuth.authenticateAsync).not.toHaveBeenCalled()
     })
   })
 
@@ -281,16 +286,21 @@ describe('SecureStorage', () => {
       expect(entropy).toBeNull()
     })
 
-    it('should throw AuthenticationError when authentication fails', async () => {
-      mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
-      mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
-      mockLocalAuth.authenticateAsync.mockResolvedValue({ 
-        success: false, 
-        error: 'user_cancel' 
+    it('should retrieve entropy without authentication even when auth would fail', async () => {
+      // Encrypted entropy does not require authentication
+      mockKeychain.getGenericPassword.mockResolvedValue({
+        service: 'test',
+        username: 'wallet_encrypted_entropy',
+        password: 'test-entropy',
+        storage: Keychain.STORAGE_TYPE.AES_GCM,
       })
 
-      await expect(storage.getEncryptedEntropy()).rejects.toThrow(AuthenticationError)
-      expect(mockKeychain.getGenericPassword).not.toHaveBeenCalled()
+      const entropy = await storage.getEncryptedEntropy()
+
+      expect(entropy).toBe('test-entropy')
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalled()
+      // Should not call authentication since entropy doesn't require it
+      expect(mockLocalAuth.authenticateAsync).not.toHaveBeenCalled()
     })
   })
 
