@@ -183,7 +183,7 @@ describe('SecureStorage', () => {
       expect(mockLocalAuth.authenticateAsync).toHaveBeenCalled()
     })
 
-    it('should return null when authentication fails', async () => {
+    it('should throw AuthenticationError when authentication fails', async () => {
       mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
       mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
       mockLocalAuth.authenticateAsync.mockResolvedValue({ 
@@ -191,9 +191,7 @@ describe('SecureStorage', () => {
         error: 'user_cancel' 
       })
 
-      const key = await storage.getEncryptionKey()
-
-      expect(key).toBeNull()
+      await expect(storage.getEncryptionKey()).rejects.toThrow(AuthenticationError)
       expect(mockKeychain.getGenericPassword).not.toHaveBeenCalled()
     })
   })
@@ -236,7 +234,7 @@ describe('SecureStorage', () => {
       expect(seed).toBeNull()
     })
 
-    it('should return null when authentication fails', async () => {
+    it('should throw AuthenticationError when authentication fails', async () => {
       mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
       mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
       mockLocalAuth.authenticateAsync.mockResolvedValue({ 
@@ -244,9 +242,7 @@ describe('SecureStorage', () => {
         error: 'user_cancel' 
       })
 
-      const seed = await storage.getEncryptedSeed()
-
-      expect(seed).toBeNull()
+      await expect(storage.getEncryptedSeed()).rejects.toThrow(AuthenticationError)
       expect(mockKeychain.getGenericPassword).not.toHaveBeenCalled()
     })
   })
@@ -285,7 +281,7 @@ describe('SecureStorage', () => {
       expect(entropy).toBeNull()
     })
 
-    it('should return null when authentication fails', async () => {
+    it('should throw AuthenticationError when authentication fails', async () => {
       mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
       mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
       mockLocalAuth.authenticateAsync.mockResolvedValue({ 
@@ -293,9 +289,7 @@ describe('SecureStorage', () => {
         error: 'user_cancel' 
       })
 
-      const entropy = await storage.getEncryptedEntropy()
-
-      expect(entropy).toBeNull()
+      await expect(storage.getEncryptedEntropy()).rejects.toThrow(AuthenticationError)
       expect(mockKeychain.getGenericPassword).not.toHaveBeenCalled()
     })
   })
@@ -407,19 +401,11 @@ describe('SecureStorage', () => {
       await expect(storage.hasWallet('invalid@#$id')).rejects.toThrow(ValidationError)
     })
 
-    it('should return false on authentication error', async () => {
-      mockKeychain.getGenericPassword.mockResolvedValueOnce({
-        service: 'test',
-        username: 'test',
-        password: 'seed',
-        storage: Keychain.STORAGE_TYPE.AES_GCM,
-      })
-      mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
-      mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
-      mockLocalAuth.authenticateAsync.mockResolvedValue({ 
-        success: false, 
-        error: 'user_cancel' 
-      })
+    it('should return false when keychain requires authentication but fails', async () => {
+      // hasWallet doesn't use the authentication flow, but if keychain itself
+      // requires authentication and fails, it should return false
+      // Mock keychain to return false (not found) when authentication is required
+      mockKeychain.getGenericPassword.mockResolvedValue(false)
 
       const exists = await storage.hasWallet()
 

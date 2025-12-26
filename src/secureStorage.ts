@@ -289,8 +289,15 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
     try {
       const authenticated = await authenticateIfAvailable(storage, identifier)
       if (!authenticated) {
+        // Authentication failed - throw error instead of returning null
+        // This allows calling code to distinguish between auth failure (don't delete wallet)
+        // and key not found (different scenario)
+        const authError = new AuthenticationError(
+          'Authentication required but failed',
+          undefined
+        )
         logger.warn('Authentication required but failed', { baseKey, identifier })
-        return null
+        throw authError
       }
 
       const storageKey = getStorageKey(baseKey, identifier)
