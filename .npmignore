@@ -1,0 +1,64 @@
+# Source files (only dist/ should be published)
+src/
+__tests__/
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+
+# Development files
+tsconfig.json
+jest.config.js
+.eslintrc*
+.prettierrc*
+.editorconfig
+
+# Documentation (keep README.md, ignore others)
+ARCHITECTURE_REVIEW.md
+CHANGELOG.md
+*.md
+!README.md
+
+# Development dependencies
+node_modules/
+.npm/
+.yarn/
+
+# Build artifacts (will be regenerated)
+*.tsbuildinfo
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env*
+!.env.example
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+
+# Temporary
+*.tmp
+*.temp
+
+

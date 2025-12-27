@@ -10,6 +10,9 @@ export class SecureStorageError extends Error {
     super(message)
     this.name = 'SecureStorageError'
     // Maintains proper stack trace for where our error was thrown (only available on V8)
+    // Note: Error.captureStackTrace is V8-specific (Node.js, Chrome). In React Native,
+    // this will typically work on Android (V8) but may not work on iOS (JavaScriptCore).
+    // If unavailable, the standard Error stack trace will be used instead.
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, this.constructor)
     }

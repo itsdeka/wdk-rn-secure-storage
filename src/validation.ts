@@ -12,7 +12,15 @@ export const MAX_VALUE_LENGTH = 10240
 
 /**
  * Pattern for valid identifiers
- * Allows: alphanumeric, dots, dashes, underscores, and email-like format
+ * Allows: alphanumeric, dots, dashes, underscores, and optional email-like format
+ * 
+ * Examples of valid identifiers:
+ * - "user123" (simple identifier)
+ * - "my_wallet" (with underscore)
+ * - "test-identifier" (with dash)
+ * - "user@example.com" (email format)
+ * 
+ * The email part (after @) is optional - simple identifiers are fully supported.
  */
 const IDENTIFIER_PATTERN = /^[a-zA-Z0-9._-]+(@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})?$/
 

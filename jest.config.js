@@ -20,6 +20,7 @@ module.exports = {
   moduleNameMapper: {
     '^react-native-keychain$': '<rootDir>/src/__tests__/__mocks__/react-native-keychain.ts',
     '^expo-local-authentication$': '<rootDir>/src/__tests__/__mocks__/expo-local-authentication.ts',
+    '^expo-crypto$': '<rootDir>/src/__tests__/__mocks__/expo-crypto.ts',
   },
 }
 
