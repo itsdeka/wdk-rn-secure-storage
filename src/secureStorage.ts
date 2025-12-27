@@ -758,14 +758,14 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
         )
 
       if (failures.length > 0) {
-        const failedServices = failures.map((f) => f.service.name).join(', ')
+        const failedServices = failures.map((f) => f.service ? f.service.name : 'unknown').join(', ')
         const error = new SecureStorageError(
           `Failed to delete wallet: ${failedServices}`,
           'WALLET_DELETE_ERROR'
         )
         logger.error('Wallet deletion failed', error, {
           identifier,
-          failedServices: failures.map((f) => f.service.name),
+          failedServices: failures.map((f) => f.service ? f.service.name : 'unknown'),
         })
         throw error
       }
