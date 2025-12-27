@@ -28,5 +28,8 @@ export {
 export type { Logger, LogEntry } from './logger'
 export { LogLevel, defaultLogger } from './logger'
 
-// Cleanup API (for advanced usage)
-export { cleanupSecureStorageModule } from './utils'
+// Validation constants
+export { MAX_IDENTIFIER_LENGTH, MAX_VALUE_LENGTH } from './validation'
+
+// Utility constants and functions
+export { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, cleanupSecureStorageModule } from './utils'
