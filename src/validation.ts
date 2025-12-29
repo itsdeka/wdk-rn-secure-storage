@@ -12,17 +12,18 @@ export const MAX_VALUE_LENGTH = 10240
 
 /**
  * Pattern for valid identifiers
- * Allows: alphanumeric, dots, dashes, underscores, and optional email-like format
+ * Allows: alphanumeric, dots, dashes, underscores, plus signs, and optional email-like format
  * 
  * Examples of valid identifiers:
  * - "user123" (simple identifier)
  * - "my_wallet" (with underscore)
  * - "test-identifier" (with dash)
  * - "user@example.com" (email format)
+ * - "user+tag@example.com" (email with plus sign in local part)
  * 
  * The email part (after @) is optional - simple identifiers are fully supported.
  */
-const IDENTIFIER_PATTERN = /^[a-zA-Z0-9._-]+(@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})?$/
+const IDENTIFIER_PATTERN = /^[a-zA-Z0-9._+-]+(@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})?$/
 
 /**
  * Validates an identifier parameter
@@ -52,7 +53,7 @@ export function validateIdentifier(identifier?: string): void {
 
   if (!IDENTIFIER_PATTERN.test(trimmed)) {
     throw new ValidationError(
-      'Identifier contains invalid characters. Allowed: alphanumeric, dots, dashes, underscores, and email format'
+      'Identifier contains invalid characters. Allowed: alphanumeric, dots, dashes, underscores, plus signs, and email format'
     )
   }
 }

@@ -15,6 +15,11 @@ describe('validation', () => {
       expect(() => validateIdentifier('user@example.com')).not.toThrow()
     })
 
+    it('should allow email identifier with plus sign', () => {
+      expect(() => validateIdentifier('dario.moceri+3@tether.to')).not.toThrow()
+      expect(() => validateIdentifier('user+tag@example.com')).not.toThrow()
+    })
+
     it('should allow valid alphanumeric identifier', () => {
       expect(() => validateIdentifier('user123')).not.toThrow()
       expect(() => validateIdentifier('user_123')).not.toThrow()
