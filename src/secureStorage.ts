@@ -360,7 +360,7 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
    * Used by hasWallet to check existence without authentication
    * 
    * @param storageKey - The storage key to check
-   * @returns true if key exists, false if not found
+   * @returns true if key exists with valid password, false if not found
    * @throws {KeychainReadError} If keychain operation fails
    * @throws {TimeoutError} If operation times out
    * @internal
@@ -375,9 +375,21 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
         timeoutMs,
         `checkKeyExists(${storageKey})`
       )
-      // Validate that credentials is not false and is a valid object
-      return credentials !== false && credentials !== null && typeof credentials === 'object'
+      // Strict validation: credentials must be an object with a non-empty password field
+      // Keychain.getGenericPassword returns false when key doesn't exist
+      // It returns an object with {username, password} when key exists
+      // It may return null in some edge cases
+      const exists = credentials !== false && 
+                     credentials !== null && 
+                     typeof credentials === 'object' &&
+                     'password' in credentials &&
+                     typeof credentials.password === 'string' &&
+                     credentials.password.length > 0
+      
+      return exists
     } catch (error) {
+      // Re-throw keychain errors - these are real failures that should be propagated
+      // Only return false when getGenericPassword returns false (key doesn't exist)
       handleSecureStorageError(
         error,
         `check key existence (${storageKey})`,
@@ -700,20 +712,49 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
     async hasWallet(identifier?: string): Promise<boolean> {
       validateIdentifier(identifier)
 
-      // Check if encrypted seed exists WITHOUT authentication
-      // We're only checking existence, not reading sensitive data
+      // Check if encrypted seed exists and is not null (without authentication)
+      // We're checking existence AND that the value is not null/empty
       const seedStorageKey = await getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
       const seedExists = await checkKeyExists(seedStorageKey)
       
       if (!seedExists) {
+        logger.debug('hasWallet: Encrypted seed not found or is null', { identifier })
         return false
       }
 
-      // Also check encryption key exists
+      // Also check encryption key exists and is not null
+      // Note: For encryption key, we can't read it without auth, but we can check existence
+      // The checkKeyExists function verifies the password field exists and is non-empty
       const encryptionKeyStorageKey = await getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
       const encryptionKeyExists = await checkKeyExists(encryptionKeyStorageKey)
       
-      return encryptionKeyExists
+      if (!encryptionKeyExists) {
+        logger.debug('hasWallet: Encryption key not found or is null', { identifier })
+        return false
+      }
+
+      // Additional verification: Try to get the actual values to ensure they're not null
+      // This is a final check to catch edge cases where the key exists but value is null
+      try {
+        // Get encrypted seed (no auth required) to verify it's not null
+        const encryptedSeed = await this.getEncryptedSeed(identifier)
+        if (!encryptedSeed || encryptedSeed.length === 0) {
+          logger.debug('hasWallet: Encrypted seed is null or empty', { identifier })
+          return false
+        }
+
+        // For encryption key, we can't check without auth, but checkKeyExists already verified
+        // the password field exists and is non-empty, so we trust that check
+        logger.debug('hasWallet: Wallet exists and values are not null', { identifier })
+        return true
+      } catch (error) {
+        // If we can't retrieve the seed, treat as not found
+        logger.debug('hasWallet: Error retrieving encrypted seed (treating as not found)', {
+          identifier,
+          error: error instanceof Error ? error.message : String(error)
+        })
+        return false
+      }
     },
 
     /**

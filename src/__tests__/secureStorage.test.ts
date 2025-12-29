@@ -890,6 +890,65 @@ describe('SecureStorage', () => {
 
       await expect(storage.hasWallet()).rejects.toThrow(KeychainReadError)
     })
+
+    it('should return false when key exists but password is null', async () => {
+      mockKeychain.getGenericPassword.mockResolvedValue({
+        service: 'test',
+        username: 'wallet_encrypted_seed',
+        password: null as any,
+        storage: Keychain.STORAGE_TYPE.AES_GCM,
+      })
+
+      const exists = await storage.hasWallet()
+      expect(exists).toBe(false)
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalledTimes(1)
+    })
+
+    it('should return false when key exists but password is empty string', async () => {
+      mockKeychain.getGenericPassword.mockResolvedValue({
+        service: 'test',
+        username: 'wallet_encrypted_seed',
+        password: '',
+        storage: Keychain.STORAGE_TYPE.AES_GCM,
+      })
+
+      const exists = await storage.hasWallet()
+      expect(exists).toBe(false)
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalledTimes(1)
+    })
+
+    it('should return false when key exists but password is missing', async () => {
+      mockKeychain.getGenericPassword.mockResolvedValue({
+        service: 'test',
+        username: 'wallet_encrypted_seed',
+        // password property missing
+        storage: Keychain.STORAGE_TYPE.AES_GCM,
+      } as any)
+
+      const exists = await storage.hasWallet()
+      expect(exists).toBe(false)
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalledTimes(1)
+    })
+
+    it('should return false when encryption key exists but password is null', async () => {
+      mockKeychain.getGenericPassword
+        .mockResolvedValueOnce({
+          service: 'test',
+          username: 'wallet_encrypted_seed',
+          password: 'seed-data',
+          storage: Keychain.STORAGE_TYPE.AES_GCM,
+        })
+        .mockResolvedValueOnce({
+          service: 'test',
+          username: 'wallet_encryption_key',
+          password: null as any,
+          storage: Keychain.STORAGE_TYPE.AES_GCM,
+        })
+
+      const exists = await storage.hasWallet()
+      expect(exists).toBe(false)
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalledTimes(2)
+    })
   })
 
   describe('edge cases - keychain return values', () => {
