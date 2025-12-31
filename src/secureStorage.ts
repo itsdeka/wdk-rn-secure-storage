@@ -733,28 +733,12 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
         return false
       }
 
-      // Additional verification: Try to get the actual values to ensure they're not null
-      // This is a final check to catch edge cases where the key exists but value is null
-      try {
-        // Get encrypted seed (no auth required) to verify it's not null
-        const encryptedSeed = await this.getEncryptedSeed(identifier)
-        if (!encryptedSeed || encryptedSeed.length === 0) {
-          logger.debug('hasWallet: Encrypted seed is null or empty', { identifier })
-          return false
-        }
-
-        // For encryption key, we can't check without auth, but checkKeyExists already verified
-        // the password field exists and is non-empty, so we trust that check
-        logger.debug('hasWallet: Wallet exists and values are not null', { identifier })
-        return true
-      } catch (error) {
-        // If we can't retrieve the seed, treat as not found
-        logger.debug('hasWallet: Error retrieving encrypted seed (treating as not found)', {
-          identifier,
-          error: error instanceof Error ? error.message : String(error)
-        })
-        return false
-      }
+      // Both keys exist and have non-empty values (verified by checkKeyExists)
+      // We skip the final verification step that calls getEncryptedSeed() to avoid
+      // any potential keychain access that might trigger biometric authentication
+      // checkKeyExists already verifies the password field exists and is non-empty
+      logger.debug('hasWallet: Wallet exists and values are not null', { identifier })
+      return true
     },
 
     /**
