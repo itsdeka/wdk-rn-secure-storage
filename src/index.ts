@@ -31,5 +31,5 @@ export { LogLevel, defaultLogger } from './logger'
 // Validation constants
 export { MAX_IDENTIFIER_LENGTH, MAX_VALUE_LENGTH } from './validation'
 
-// Utility constants and functions
-export { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, cleanupSecureStorageModule } from './utils'
+// Timeout constants
+export { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS } from './constants'

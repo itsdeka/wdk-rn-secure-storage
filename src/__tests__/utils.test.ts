@@ -1,17 +1,11 @@
 import { 
   getStorageKey, 
-  checkRateLimit, 
-  recordFailedAttempt, 
-  recordSuccess,
   withTimeout,
-  MIN_TIMEOUT_MS,
-  MAX_TIMEOUT_MS,
-  __resetRateLimiter,
+  isKeychainCredentials,
   createStorageKey,
-  cleanupSecureStorageModule,
-  __stopPeriodicCleanup,
 } from '../utils'
-import { AuthenticationError, TimeoutError, ValidationError } from '../errors'
+import { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS } from '../constants'
+import { TimeoutError, ValidationError } from '../errors'
 
 // Mock expo-crypto
 jest.mock('expo-crypto', () => ({
@@ -32,9 +26,6 @@ jest.mock('expo-crypto', () => ({
 }))
 
 describe('utils', () => {
-  beforeEach(() => {
-    __resetRateLimiter()
-  })
 
   describe('getStorageKey', () => {
     it('should return base key when identifier is undefined', async () => {
@@ -68,108 +59,6 @@ describe('utils', () => {
       await expect(
         getStorageKey('invalid_key' as any, 'user@example.com')
       ).rejects.toThrow(ValidationError)
-    })
-  })
-
-  describe('rate limiting', () => {
-    beforeEach(() => {
-      __resetRateLimiter()
-    })
-
-    it('should allow authentication within rate limit', () => {
-      expect(() => checkRateLimit()).not.toThrow()
-    })
-
-    it('should throw AuthenticationError after max attempts', () => {
-      for (let i = 0; i < 5; i++) {
-        recordFailedAttempt()
-      }
-      
-      expect(() => checkRateLimit()).toThrow(AuthenticationError)
-    })
-
-    it('should reset on successful authentication', () => {
-      // Make 4 failed attempts
-      for (let i = 0; i < 4; i++) {
-        recordFailedAttempt()
-      }
-      
-      // Success should reset
-      recordSuccess()
-      
-      // Should be able to authenticate again
-      expect(() => checkRateLimit()).not.toThrow()
-    })
-
-    it('should handle per-identifier rate limiting', () => {
-      // Lock out user1
-      for (let i = 0; i < 5; i++) {
-        recordFailedAttempt('user1@example.com')
-      }
-      
-      // user2 should still be allowed
-      expect(() => checkRateLimit('user2@example.com')).not.toThrow()
-      
-      // user1 should be locked out
-      expect(() => checkRateLimit('user1@example.com')).toThrow(AuthenticationError)
-    })
-
-    it('should cleanup expired entries', () => {
-      // This test verifies that cleanup is called
-      // In a real scenario, we'd need to manipulate time to test expiration
-      // For now, we verify the function doesn't throw and handles cleanup
-      recordFailedAttempt('user1@example.com')
-      expect(() => checkRateLimit('user1@example.com')).not.toThrow()
-    })
-
-    it('should handle concurrent rate limit checks correctly', () => {
-      // Simulate concurrent rate limit checks
-      const results: (void | Error)[] = []
-      
-      // Start multiple concurrent checks
-      for (let i = 0; i < 10; i++) {
-        try {
-          checkRateLimit('concurrent@example.com')
-          results.push(undefined)
-        } catch (error) {
-          results.push(error as Error)
-        }
-      }
-      
-      // All should succeed (no attempts recorded yet)
-      expect(results.every(r => r === undefined)).toBe(true)
-    })
-
-    it('should handle concurrent failed attempt recording', () => {
-      // Simulate concurrent failed attempts
-      const promises = Array.from({ length: 10 }, () => {
-        return Promise.resolve().then(() => {
-          try {
-            checkRateLimit('concurrent-fail@example.com')
-            recordFailedAttempt('concurrent-fail@example.com')
-          } catch (error) {
-            // Expected after lockout
-          }
-        })
-      })
-      
-      return Promise.all(promises).then(() => {
-        // After 5 attempts, should be locked out
-        expect(() => checkRateLimit('concurrent-fail@example.com')).toThrow(AuthenticationError)
-      })
-    })
-
-    it('should maintain correct state with rapid concurrent operations', () => {
-      // Rapidly record multiple failed attempts
-      for (let i = 0; i < 5; i++) {
-        recordFailedAttempt('rapid@example.com')
-      }
-      
-      // Should be locked out
-      expect(() => checkRateLimit('rapid@example.com')).toThrow(AuthenticationError)
-      
-      // Other identifier should not be affected
-      expect(() => checkRateLimit('other@example.com')).not.toThrow()
     })
   })
 
@@ -231,71 +120,63 @@ describe('utils', () => {
     })
   })
 
-  describe('cleanupSecureStorageModule', () => {
-    beforeEach(() => {
-      __resetRateLimiter()
-      __stopPeriodicCleanup()
+
+  describe('isKeychainCredentials', () => {
+    it('should return true for valid credentials', () => {
+      const credentials = {
+        username: 'test',
+        password: 'password123',
+        service: 'test-service',
+        storage: 'AES_GCM',
+      }
+      expect(isKeychainCredentials(credentials)).toBe(true)
     })
 
-    it('should cleanup rate limiter state', () => {
-      // Add some rate limit entries
-      recordFailedAttempt('user1@example.com')
-      recordFailedAttempt('user2@example.com')
-      
-      // Cleanup should clear all entries
-      cleanupSecureStorageModule()
-      
-      // Should be able to check rate limit without errors
-      expect(() => checkRateLimit('user1@example.com')).not.toThrow()
-      expect(() => checkRateLimit('user2@example.com')).not.toThrow()
+    it('should return true for credentials without storage', () => {
+      const credentials = {
+        username: 'test',
+        password: 'password123',
+        service: 'test-service',
+      }
+      expect(isKeychainCredentials(credentials)).toBe(true)
     })
 
-    it('should stop periodic cleanup interval', () => {
-      // Start cleanup by triggering rate limit check
-      checkRateLimit()
-      
-      // Cleanup should stop the interval
-      cleanupSecureStorageModule()
-      
-      // Interval should be stopped
-      expect(() => cleanupSecureStorageModule()).not.toThrow()
+    it('should return false for false', () => {
+      expect(isKeychainCredentials(false)).toBe(false)
     })
 
-    it('should be idempotent', () => {
-      recordFailedAttempt('user@example.com')
-      
-      cleanupSecureStorageModule()
-      cleanupSecureStorageModule() // Call again
-      
-      // Should not throw
-      expect(() => checkRateLimit('user@example.com')).not.toThrow()
+    it('should return false for null', () => {
+      expect(isKeychainCredentials(null)).toBe(false)
+    })
+
+    it('should return false for undefined', () => {
+      expect(isKeychainCredentials(undefined)).toBe(false)
+    })
+
+    it('should return false for non-object', () => {
+      expect(isKeychainCredentials('string')).toBe(false)
+      expect(isKeychainCredentials(123)).toBe(false)
+      expect(isKeychainCredentials([])).toBe(false)
+    })
+
+    it('should return false for object without password', () => {
+      expect(isKeychainCredentials({ username: 'test', service: 'test' })).toBe(false)
+    })
+
+    it('should return false for object with non-string password', () => {
+      expect(isKeychainCredentials({ username: 'test', password: 123, service: 'test' })).toBe(false)
+      expect(isKeychainCredentials({ username: 'test', password: null, service: 'test' })).toBe(false)
+    })
+
+    it('should return false for object with empty password', () => {
+      expect(isKeychainCredentials({ username: 'test', password: '', service: 'test' })).toBe(false)
+    })
+
+    it('should return true for object with non-empty password string', () => {
+      expect(isKeychainCredentials({ username: 'test', password: 'a', service: 'test' })).toBe(true)
+      expect(isKeychainCredentials({ username: 'test', password: 'valid', service: 'test' })).toBe(true)
     })
   })
 
-  describe('lazy initialization', () => {
-    beforeEach(() => {
-      __resetRateLimiter()
-      __stopPeriodicCleanup()
-    })
-
-    it('should start cleanup on first rate limit check', () => {
-      // Cleanup should not be started initially
-      expect(() => checkRateLimit()).not.toThrow()
-      
-      // After first check, cleanup should be started
-      // We can't directly test the interval, but we can verify
-      // that subsequent operations work correctly
-      recordFailedAttempt('test@example.com')
-      expect(() => checkRateLimit('test@example.com')).not.toThrow()
-    })
-
-    it('should start cleanup on first failed attempt', () => {
-      // Cleanup should start when recording failed attempt
-      recordFailedAttempt('test@example.com')
-      
-      // Should work correctly
-      expect(() => checkRateLimit('test@example.com')).not.toThrow()
-    })
-  })
 })
 

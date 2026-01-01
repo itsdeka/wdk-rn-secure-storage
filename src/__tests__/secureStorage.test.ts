@@ -23,6 +23,7 @@ const mockLogger: Logger = {
 jest.mock('react-native-keychain', () => ({
   ACCESSIBLE: {
     WHEN_UNLOCKED: 'WHEN_UNLOCKED',
+    WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'WHEN_UNLOCKED_THIS_DEVICE_ONLY',
   },
   ACCESS_CONTROL: {
     BIOMETRY_ANY_OR_DEVICE_PASSCODE: 'BIOMETRY_ANY_OR_DEVICE_PASSCODE',
@@ -79,10 +80,6 @@ describe('SecureStorage', () => {
     // Reset all mocks
     jest.clearAllMocks()
     
-    // Reset rate limiter
-    const { __resetRateLimiter } = require('../utils')
-    __resetRateLimiter()
-    
     // Default mock implementations
     mockLocalAuth.isEnrolledAsync.mockResolvedValue(true)
     mockLocalAuth.hasHardwareAsync.mockResolvedValue(true)
@@ -126,6 +123,19 @@ describe('SecureStorage', () => {
       expect(call[0]).toBe('wallet_encryption_key')
       expect(call[1]).toBe('test-key')
       expect(call[2]?.service).toContain('wallet_encryption_key')
+      expect(call[2]?.accessible).toBe(Keychain.ACCESSIBLE.WHEN_UNLOCKED)
+    })
+
+    it('should use WHEN_UNLOCKED for encryption key to allow cloud sync', async () => {
+      await storage.setEncryptionKey('test-key')
+      
+      expect(mockKeychain.setGenericPassword).toHaveBeenCalledWith(
+        'wallet_encryption_key',
+        'test-key',
+        expect.objectContaining({
+          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
+        })
+      )
     })
 
     it('should throw ValidationError for empty key', async () => {
@@ -230,7 +240,22 @@ describe('SecureStorage', () => {
       expect(mockKeychain.setGenericPassword).toHaveBeenCalledWith(
         'wallet_encrypted_seed',
         'encrypted-seed-data',
-        expect.any(Object)
+        expect.objectContaining({
+          service: expect.any(String),
+          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+        })
+      )
+    })
+
+    it('should use WHEN_UNLOCKED_THIS_DEVICE_ONLY to prevent cloud sync', async () => {
+      await storage.setEncryptedSeed('encrypted-seed-data')
+      
+      expect(mockKeychain.setGenericPassword).toHaveBeenCalledWith(
+        'wallet_encrypted_seed',
+        'encrypted-seed-data',
+        expect.objectContaining({
+          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+        })
       )
     })
 
@@ -286,7 +311,10 @@ describe('SecureStorage', () => {
       expect(mockKeychain.setGenericPassword).toHaveBeenCalledWith(
         'wallet_encrypted_entropy',
         'encrypted-entropy-data',
-        expect.any(Object)
+        expect.objectContaining({
+          service: expect.any(String),
+          accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+        })
       )
     })
   })
@@ -541,151 +569,8 @@ describe('SecureStorage', () => {
     })
   })
 
-  describe('rate limiting', () => {
-    beforeEach(() => {
-      // Reset rate limiter
-      const { __resetRateLimiter } = require('../utils')
-      __resetRateLimiter()
-      resetStorage()
-    })
-
-    it('should allow authentication within rate limit', async () => {
-      // Make 4 attempts (under limit of 5)
-      for (let i = 0; i < 4; i++) {
-        mockLocalAuth.authenticateAsync.mockResolvedValueOnce({ 
-          success: false, 
-          error: 'user_cancel' 
-        })
-        await storage.authenticate()
-      }
-
-      // 5th attempt should still work
-      mockLocalAuth.authenticateAsync.mockResolvedValueOnce({ success: true })
-      const result = await storage.authenticate()
-      expect(result).toBe(true)
-    })
-
-    it('should enforce rate limit after max attempts', async () => {
-      // Make 5 failed attempts
-      for (let i = 0; i < 5; i++) {
-        mockLocalAuth.authenticateAsync.mockResolvedValueOnce({ 
-          success: false, 
-          error: 'user_cancel' 
-        })
-        await storage.authenticate()
-      }
-
-      // 6th attempt should throw AuthenticationError
-      await expect(storage.authenticate()).rejects.toThrow(AuthenticationError)
-    })
-
-    it('should reset rate limit on successful authentication', async () => {
-      // Make 4 failed attempts
-      for (let i = 0; i < 4; i++) {
-        mockLocalAuth.authenticateAsync.mockResolvedValueOnce({ 
-          success: false, 
-          error: 'user_cancel' 
-        })
-        await storage.authenticate()
-      }
-
-      // Successful attempt should reset
-      mockLocalAuth.authenticateAsync.mockResolvedValueOnce({ success: true })
-      await storage.authenticate()
-
-      // Should be able to make more attempts
-      mockLocalAuth.authenticateAsync.mockResolvedValueOnce({ success: true })
-      const result = await storage.authenticate()
-      expect(result).toBe(true)
-    })
-
-    it('should cleanup expired rate limit entries', async () => {
-      const { checkRateLimit, recordFailedAttempt } = require('../utils')
-      
-      // Create entries for multiple identifiers
-      recordFailedAttempt('user1@example.com')
-      recordFailedAttempt('user2@example.com')
-      recordFailedAttempt('user3@example.com')
-      
-      // Manually expire entries by manipulating time (in a real scenario, time would pass)
-      // Since we can't manipulate time easily, we'll test that cleanup is called
-      // by checking that expired entries are removed when checkRateLimit is called
-      
-      // The cleanup happens in checkRateLimit, so calling it should clean up expired entries
-      // For this test, we'll verify the cleanup function exists and is called
-      expect(() => checkRateLimit('user1@example.com')).not.toThrow()
-    })
-
-    it('should handle rate limiting per identifier independently', async () => {
-      const { checkRateLimit, recordFailedAttempt, __resetRateLimiter } = require('../utils')
-      __resetRateLimiter()
-      
-      // Lock out user1
-      for (let i = 0; i < 5; i++) {
-        recordFailedAttempt('user1@example.com')
-      }
-      
-      // user2 should still be able to authenticate
-      expect(() => checkRateLimit('user2@example.com')).not.toThrow()
-      
-      // user1 should be locked out
-      expect(() => checkRateLimit('user1@example.com')).toThrow(AuthenticationError)
-    })
-
-    it('should handle concurrent authentication attempts correctly', async () => {
-      const { checkRateLimit, recordFailedAttempt, __resetRateLimiter } = require('../utils')
-      __resetRateLimiter()
-      
-      // Simulate concurrent authentication attempts (4 attempts, under limit of 5)
-      const promises = Array.from({ length: 4 }, () => {
-        return new Promise<void>((resolve, reject) => {
-          try {
-            checkRateLimit('concurrent@example.com')
-            recordFailedAttempt('concurrent@example.com')
-            resolve()
-          } catch (error) {
-            reject(error)
-          }
-        })
-      })
-      
-      // All should complete (rate limit not exceeded yet)
-      await expect(Promise.all(promises)).resolves.toBeDefined()
-      
-      // After 5 total attempts, should be locked out
-      recordFailedAttempt('concurrent@example.com') // 5th attempt
-      
-      expect(() => checkRateLimit('concurrent@example.com')).toThrow(AuthenticationError)
-    })
-
-    it('should maintain correct attempt count with concurrent operations', async () => {
-      const { checkRateLimit, recordFailedAttempt, __resetRateLimiter } = require('../utils')
-      __resetRateLimiter()
-      
-      // Simulate rapid concurrent failed attempts
-      const concurrentAttempts = Array.from({ length: 8 }, () => 
-        Promise.resolve().then(() => {
-          try {
-            checkRateLimit('rapid@example.com')
-            recordFailedAttempt('rapid@example.com')
-          } catch (error) {
-            // Expected after lockout
-          }
-        })
-      )
-      
-      await Promise.all(concurrentAttempts)
-      
-      // Should be locked out after 5 attempts
-      expect(() => checkRateLimit('rapid@example.com')).toThrow(AuthenticationError)
-    })
-  })
-
   describe('concurrent operations', () => {
     beforeEach(() => {
-      // Reset rate limiter
-      const { __resetRateLimiter } = require('../utils')
-      __resetRateLimiter()
       resetStorage()
     })
 
@@ -807,10 +692,6 @@ describe('SecureStorage', () => {
       // Reset all mocks completely to remove any previous state
       jest.clearAllMocks()
       mockKeychain.getGenericPassword.mockReset()
-      
-      // Reset rate limiter 
-      const { __resetRateLimiter } = require('../utils')
-      __resetRateLimiter()
       
       // Set up mocks for this specific test
       mockLocalAuth.isEnrolledAsync.mockResolvedValue(false)
@@ -1069,5 +950,43 @@ describe('SecureStorage', () => {
       await Promise.all(promises)
       expect(mockKeychain.setGenericPassword).toHaveBeenCalledTimes(3)
     })
+  })
+
+  describe('error handling edge cases', () => {
+    it('should handle ValidationError in error handler', async () => {
+      // ValidationError is thrown during validation before operations,
+      // so it doesn't go through handleSecureStorageError.
+      // This test verifies ValidationError is properly thrown.
+      await expect(storage.getEncryptionKey('invalid@#$identifier')).rejects.toThrow(ValidationError)
+    })
+
+    it('should handle error in isDeviceAuthenticationAvailable', async () => {
+      // Make isEnrolledAsync throw an error
+      mockLocalAuth.isEnrolledAsync.mockRejectedValueOnce(new Error('Device auth check failed'))
+      
+      // This should be caught and return false
+      await storage.setEncryptionKey('key')
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'Failed to check device authentication availability',
+        expect.any(Error),
+        {}
+      )
+    })
+
+
+    it('should return true when device auth available but not biometric', async () => {
+      // Device auth available, but biometric not available
+      // This tests the path where isDeviceAuthenticationAvailable returns true
+      // but isBiometricAvailable returns false
+      mockLocalAuth.isEnrolledAsync.mockResolvedValueOnce(true)
+      mockLocalAuth.hasHardwareAsync.mockResolvedValueOnce(true) // Has hardware
+      mockLocalAuth.isEnrolledAsync.mockResolvedValueOnce(true) // Is enrolled
+      mockLocalAuth.hasHardwareAsync.mockResolvedValueOnce(false) // But biometric not available
+      
+      // Should succeed without requiring authentication (line 263)
+      await storage.getEncryptionKey()
+      expect(mockKeychain.getGenericPassword).toHaveBeenCalled()
+    })
+
   })
 })

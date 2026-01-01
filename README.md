@@ -5,11 +5,10 @@ Secure storage abstractions for React Native - provides secure storage for sensi
 ## Features
 
 - 🔒 Secure storage using native keychain/keystore
-- 📱 iOS Keychain integration with iCloud sync
-- 🤖 Android Keystore integration with Google Cloud backup
+- 📱 iOS Keychain integration with selective iCloud sync
+- 🤖 Android Keystore integration with selective Google Cloud backup
 - 🔐 Biometric authentication support
 - 💾 Encrypted data storage at rest
-- 🛡️ Rate limiting to prevent brute force attacks
 - ✅ Comprehensive input validation
 - 📊 Structured logging support
 - ⏱️ Configurable timeouts
@@ -48,16 +47,6 @@ Then run `npm install`.
 ```bash
 npm install react-native@">=0.70.0"
 ```
-
-## ⚠️ Important Security Notice
-
-**Rate Limiting Reset on App Restart:** The rate limiting mechanism resets when the app is restarted. This means an attacker could potentially bypass rate limiting by restarting the app. However, this is generally acceptable for mobile apps because:
-
-- Restarting requires user interaction (not easily automated)
-- OS-level keychain/keystore protections still apply
-- App-level rate limiting provides defense-in-depth within a session
-
-For high-security scenarios requiring persistent rate limiting across app restarts, consider implementing a wrapper that stores rate limit state in secure storage. See the [Rate Limiting](#rate-limiting) section for details.
 
 ## Usage
 
@@ -214,7 +203,7 @@ Retrieves an encryption key.
 
 **Throws:**
 - `ValidationError` - If identifier is invalid
-- `AuthenticationError` - If authentication fails or rate limit exceeded
+- `AuthenticationError` - If authentication fails
 - `KeychainReadError` - If keychain operation fails
 - `TimeoutError` - If operation times out
 
@@ -260,51 +249,8 @@ Checks if biometric authentication is available.
 Authenticates with biometrics. Returns `true` if successful, `false` otherwise.
 
 **Throws:**
-- `AuthenticationError` - If rate limit exceeded
+- `AuthenticationError` - If authentication fails
 
-### `cleanupSecureStorageModule()`
-
-Cleans up module resources (rate limiting state and periodic cleanup interval).
-
-**Important Notes:**
-- This does NOT delete stored wallet data - use `deleteWallet()` for that.
-- This is typically only needed in specific scenarios (hot-reload, testing, app shutdown)
-- For normal app usage, you generally don't need to call this manually
-- The module automatically cleans up expired rate limit entries periodically
-
-**When to call:**
-- During hot-reload in development (to reset rate limiting state)
-- In test teardown (to ensure clean state between tests)
-- During app shutdown (optional, for explicit cleanup)
-- When you want to reset rate limiting state programmatically
-
-**Examples:**
-
-```typescript
-import { cleanupSecureStorageModule } from '@tetherto/wdk-rn-secure-storage'
-
-// Example 1: In test teardown
-afterAll(() => {
-  cleanupSecureStorageModule()
-})
-
-// Example 2: During hot-reload (development only)
-if (__DEV__ && module.hot) {
-  module.hot.dispose(() => {
-    cleanupSecureStorageModule()
-  })
-}
-
-// Example 3: In React Native app lifecycle (optional)
-import { AppState } from 'react-native'
-
-AppState.addEventListener('change', (nextAppState) => {
-  if (nextAppState === 'background') {
-    // Optional: cleanup when app goes to background
-    // Note: This is usually not necessary for normal usage
-  }
-})
-```
 
 ### Logger Interface
 
@@ -335,36 +281,7 @@ const storage = createSecureStorage({ logger: customLogger })
 
 ## Module Lifecycle & Resource Management
 
-### Cleanup API
-
-The module provides a cleanup function to release resources when no longer needed:
-
-```typescript
-import { cleanupSecureStorageModule } from '@tetherto/wdk-rn-secure-storage'
-
-// In your app's cleanup lifecycle (e.g., app shutdown, hot-reload)
-cleanupSecureStorageModule()
-```
-
-**Important Notes:**
-- This stops the periodic cleanup interval and clears rate limiting state
-- This does NOT delete stored wallet data - use `deleteWallet()` for that
-- In most cases, you don't need to call this manually
-- Useful for hot-reload scenarios or when you want to reset rate limiting state
-
-### Shared Rate Limiting State
-
-**Important:** Rate limiting is shared across ALL storage instances. This means:
-- All instances created with `createSecureStorage()` share the same rate limit state
-- Rate limiting is global, not per-instance
-- This provides consistent security behavior across your application
-
-### Module Initialization
-
-The module uses lazy initialization to avoid side effects on import:
-- Periodic cleanup starts automatically on first rate limit check
-- No side effects when the module is imported
-- Makes testing easier and prevents issues in test environments
+The module has no shared state or cleanup requirements. Each storage instance is independent and can be used without any module-level lifecycle management.
 
 ## Security Features
 
@@ -374,37 +291,6 @@ The module uses lazy initialization to avoid side effects on import:
 - Invalid characters rejected
 - Type checking at runtime
 - All validation happens before any side effects
-
-### Rate Limiting
-
-**⚠️ Security Limitation:** Rate limiting state is stored in-memory only and **resets when the app is restarted**. This is a known limitation that should be considered for high-security applications.
-
-**Current Behavior:**
-- Maximum 5 authentication attempts per 15-minute window
-- 30-minute lockout after max attempts
-- Per-identifier rate limiting
-- **Shared state:** Rate limiting is global across all storage instances
-- **In-memory storage:** Rate limiting state is stored in memory and resets on app restart
-
-**Why This Is Generally Acceptable:**
-<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
-read_file
-
-1. **User Interaction Required**: Restarting a mobile app requires user interaction, making it difficult for attackers to rapidly restart and bypass rate limits
-2. **OS-Level Protections**: The underlying keychain/keystore has its own rate limiting and lockout mechanisms
-3. **Defense in Depth**: App-level rate limiting adds an additional layer of protection on top of OS-level protections
-
-However, for high-security scenarios where persistent rate limiting across app restarts is required, you may want to implement persistent rate limiting using secure storage. This would involve:
-
-- Storing rate limit state in secure storage (encrypted)
-- Checking and updating rate limit state on each authentication attempt
-- Implementing proper cleanup of expired rate limit entries
-
-**Security Implications:**
-- **In-Memory (Current)**: Resets on app restart, but prevents rapid-fire authentication attempts within a session
-- **Persistent (Future)**: Survives app restarts, providing stronger protection but requiring secure storage for rate limit state
-
-If you need persistent rate limiting for your use case, consider implementing it as a wrapper around this module that stores rate limit state in secure storage.
 
 ### Error Handling
 - Comprehensive error types for different failure scenarios
@@ -467,7 +353,7 @@ This module is production-ready and includes:
 
 ✅ **Built and tested** - All code is compiled to JavaScript with TypeScript definitions  
 ✅ **Proper exports** - Only necessary files are included in the npm package  
-✅ **Security hardened** - Input validation, rate limiting, and secure storage  
+✅ **Security hardened** - Input validation and secure storage with device-level protections  
 ✅ **Error handling** - Comprehensive error types for all failure scenarios  
 ✅ **Logging** - Structured logging with configurable levels (defaults to ERROR in production)  
 ✅ **Type safety** - Full TypeScript support with exported types  
@@ -514,25 +400,18 @@ This module is production-ready and includes:
 ## Security Considerations
 
 - Data is encrypted at rest by iOS Keychain / Android Keystore
-- Cloud sync enabled via iCloud Keychain (iOS) and Google Cloud backup (Android)
+- Cloud sync behavior:
+  - **Encryption key**: Synced via iCloud Keychain (iOS) and Google Cloud backup (Android)
+  - **Encrypted seed and entropy**: Device-only storage (not synced across devices)
 - Biometric authentication required when available
-- Rate limiting prevents brute force attacks
-- Input validation prevents injection attacks
-- Storage keys are hashed to prevent collisions
+- Device-level keychain/keystore provides rate limiting and lockout mechanisms
 - **No sensitive data is logged** - The logger only logs error messages and metadata
 
 ## Security Limitations
 
 ⚠️ **Important Security Notes:**
 
-1. **Rate Limiting Reset on App Restart**: Rate limiting state is stored in-memory only and resets when the app is restarted. This means an attacker could potentially bypass rate limiting by restarting the app. However, this is generally acceptable for mobile apps where:
-   - Restarting requires user interaction
-   - The app is typically running in the foreground during authentication
-   - The device itself provides additional security layers (device lock, biometrics)
-
-   For enhanced security in high-risk scenarios, consider implementing persistent rate limiting using secure storage or AsyncStorage.
-
-2. **Timeout Resource Usage**: The timeout implementation uses `Promise.race()` which does NOT cancel the underlying keychain operation. The operation continues executing even after timeout, though its result is ignored. This means:
+1. **Timeout Resource Usage**: The timeout implementation uses `Promise.race()` which does NOT cancel the underlying keychain operation. The operation continues executing even after timeout, though its result is ignored. This means:
    - Under extreme load, timed-out keychain operations may continue executing in the background
    - Memory and resources are not immediately freed on timeout
    - This is generally acceptable because:
@@ -542,11 +421,9 @@ This module is production-ready and includes:
      - React Native's single-threaded nature limits concurrent operations
    - **Monitoring**: In production, monitor timeout frequency. If timeouts occur frequently, investigate keychain performance or increase timeout values.
 
-3. **In-Memory Rate Limiter**: The rate limiter uses an in-memory Map that automatically cleans up expired entries. However, if many unique identifiers are used, memory usage may grow. The implementation includes automatic cleanup to mitigate this. **Shared State**: Rate limiting is shared across all storage instances - this is intentional and provides consistent security behavior.
+2. **Device Authentication**: On devices without authentication (no PIN/password/biometrics), data is still encrypted at rest but accessible when the device is unlocked. This is a limitation of the underlying platform security model.
 
-4. **Device Authentication**: On devices without authentication (no PIN/password/biometrics), data is still encrypted at rest but accessible when the device is unlocked. This is a limitation of the underlying platform security model.
-
-5. **Module Cleanup**: The module uses lazy initialization to avoid side effects on import. Periodic cleanup starts automatically on first rate limit check. For hot-reload scenarios or explicit cleanup, use `cleanupSecureStorageModule()`.
+3. **Device-Level Rate Limiting**: The module relies on device-level keychain/keystore rate limiting and lockout mechanisms. These are more robust than app-level rate limiting and persist across app restarts.
 
 ## Contributing
 

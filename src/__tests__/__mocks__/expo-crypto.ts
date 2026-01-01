@@ -15,7 +15,7 @@ export enum CryptoDigestAlgorithm {
  * For testing purposes, uses a simple hash to ensure consistency
  */
 export async function digestStringAsync(
-  algorithm: CryptoDigestAlgorithm,
+  _algorithm: CryptoDigestAlgorithm,
   data: string
 ): Promise<string> {
   // Simple deterministic hash for testing (not cryptographically secure, but consistent)

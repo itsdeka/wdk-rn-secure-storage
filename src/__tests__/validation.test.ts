@@ -1,5 +1,6 @@
-import { validateIdentifier, validateValue, MAX_IDENTIFIER_LENGTH, MAX_VALUE_LENGTH } from '../validation'
+import { validateIdentifier, validateValue, validateTimeout, validateAuthenticationOptions, MAX_IDENTIFIER_LENGTH, MAX_VALUE_LENGTH } from '../validation'
 import { ValidationError } from '../errors'
+import { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS } from '../constants'
 
 describe('validation', () => {
   describe('validateIdentifier', () => {
@@ -95,6 +96,125 @@ describe('validation', () => {
         expect(error).toBeInstanceOf(ValidationError)
         expect((error as ValidationError).message).toContain('customField')
       }
+    })
+  })
+
+  describe('validateTimeout', () => {
+    it('should allow undefined timeout', () => {
+      expect(() => validateTimeout(undefined)).not.toThrow()
+      expect(validateTimeout(undefined)).toBeUndefined()
+    })
+
+    it('should allow valid timeout within range', () => {
+      expect(() => validateTimeout(MIN_TIMEOUT_MS)).not.toThrow()
+      expect(() => validateTimeout(MAX_TIMEOUT_MS)).not.toThrow()
+      expect(() => validateTimeout(30000)).not.toThrow()
+      expect(validateTimeout(30000)).toBe(30000)
+    })
+
+    it('should throw ValidationError for non-number', () => {
+      expect(() => validateTimeout('1000' as any)).toThrow(ValidationError)
+      expect(() => validateTimeout(null as any)).toThrow(ValidationError)
+      expect(() => validateTimeout({} as any)).toThrow(ValidationError)
+    })
+
+    it('should throw ValidationError for NaN', () => {
+      expect(() => validateTimeout(NaN)).toThrow(ValidationError)
+    })
+
+    it('should throw ValidationError for Infinity', () => {
+      expect(() => validateTimeout(Infinity)).toThrow(ValidationError)
+      expect(() => validateTimeout(-Infinity)).toThrow(ValidationError)
+    })
+
+    it('should throw ValidationError for timeout too short', () => {
+      expect(() => validateTimeout(MIN_TIMEOUT_MS - 1)).toThrow(ValidationError)
+      expect(() => validateTimeout(0)).toThrow(ValidationError)
+      expect(() => validateTimeout(-1000)).toThrow(ValidationError)
+    })
+
+    it('should throw ValidationError for timeout too long', () => {
+      expect(() => validateTimeout(MAX_TIMEOUT_MS + 1)).toThrow(ValidationError)
+    })
+
+    it('should return the timeout value when valid', () => {
+      expect(validateTimeout(5000)).toBe(5000)
+      expect(validateTimeout(MIN_TIMEOUT_MS)).toBe(MIN_TIMEOUT_MS)
+      expect(validateTimeout(MAX_TIMEOUT_MS)).toBe(MAX_TIMEOUT_MS)
+    })
+  })
+
+  describe('validateAuthenticationOptions', () => {
+    it('should allow undefined options', () => {
+      expect(() => validateAuthenticationOptions(undefined)).not.toThrow()
+    })
+
+    it('should allow empty options object', () => {
+      expect(() => validateAuthenticationOptions({})).not.toThrow()
+    })
+
+    it('should allow valid promptMessage', () => {
+      expect(() => validateAuthenticationOptions({ promptMessage: 'Authenticate' })).not.toThrow()
+      expect(() => validateAuthenticationOptions({ promptMessage: 'Please authenticate' })).not.toThrow()
+    })
+
+    it('should throw ValidationError for non-string promptMessage', () => {
+      expect(() => validateAuthenticationOptions({ promptMessage: 123 as any })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ promptMessage: null as any })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ promptMessage: {} as any })).toThrow(ValidationError)
+    })
+
+    it('should throw ValidationError for empty promptMessage', () => {
+      expect(() => validateAuthenticationOptions({ promptMessage: '' })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ promptMessage: '   ' })).toThrow(ValidationError)
+    })
+
+    it('should allow valid cancelLabel', () => {
+      expect(() => validateAuthenticationOptions({ cancelLabel: 'Cancel' })).not.toThrow()
+      expect(() => validateAuthenticationOptions({ cancelLabel: 'Abort' })).not.toThrow()
+    })
+
+    it('should throw ValidationError for non-string cancelLabel', () => {
+      expect(() => validateAuthenticationOptions({ cancelLabel: 123 as any })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ cancelLabel: null as any })).toThrow(ValidationError)
+    })
+
+    it('should throw ValidationError for empty cancelLabel', () => {
+      expect(() => validateAuthenticationOptions({ cancelLabel: '' })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ cancelLabel: '   ' })).toThrow(ValidationError)
+    })
+
+    it('should allow valid disableDeviceFallback', () => {
+      expect(() => validateAuthenticationOptions({ disableDeviceFallback: true })).not.toThrow()
+      expect(() => validateAuthenticationOptions({ disableDeviceFallback: false })).not.toThrow()
+    })
+
+    it('should throw ValidationError for non-boolean disableDeviceFallback', () => {
+      expect(() => validateAuthenticationOptions({ disableDeviceFallback: 'true' as any })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ disableDeviceFallback: 1 as any })).toThrow(ValidationError)
+      expect(() => validateAuthenticationOptions({ disableDeviceFallback: null as any })).toThrow(ValidationError)
+    })
+
+    it('should allow all options together', () => {
+      expect(() => validateAuthenticationOptions({
+        promptMessage: 'Authenticate',
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: true,
+      })).not.toThrow()
+    })
+
+    it('should validate each option independently', () => {
+      // Valid promptMessage, invalid cancelLabel
+      expect(() => validateAuthenticationOptions({
+        promptMessage: 'Authenticate',
+        cancelLabel: '',
+      })).toThrow(ValidationError)
+
+      // Valid cancelLabel, invalid promptMessage
+      expect(() => validateAuthenticationOptions({
+        promptMessage: '',
+        cancelLabel: 'Cancel',
+      })).toThrow(ValidationError)
     })
   })
 })

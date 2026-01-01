@@ -1,34 +1,37 @@
+// External packages
 import * as Keychain from 'react-native-keychain'
 import * as LocalAuthentication from 'expo-local-authentication'
+
+// Internal modules
+import { DEFAULT_TIMEOUT_MS, DEVICE_AUTH_CACHE_TTL_MS } from './constants'
 import {
-  SecureStorageError,
-  KeychainWriteError,
-  KeychainReadError,
   AuthenticationError,
-  ValidationError,
+  KeychainReadError,
+  KeychainWriteError,
+  SecureStorageError,
   TimeoutError,
+  ValidationError,
 } from './errors'
-import { validateIdentifier, validateValue } from './validation'
+import { createKeychainOptions } from './keychainHelpers'
 import { Logger, defaultLogger } from './logger'
 import {
+  createStorageKey,
   getStorageKey,
-  checkRateLimit,
-  recordFailedAttempt,
-  recordSuccess,
-  withTimeout,
-  MIN_TIMEOUT_MS,
-  MAX_TIMEOUT_MS,
+  isKeychainCredentials,
   type StorageKey,
+  withTimeout,
 } from './utils'
+import {
+  validateAuthenticationOptions,
+  validateIdentifier,
+  validateTimeout,
+  validateValue,
+} from './validation'
 
-/**
- * Secure storage keys (base keys without identifier)
- */
-const STORAGE_KEYS = {
-  ENCRYPTION_KEY: 'wallet_encryption_key' as StorageKey,
-  ENCRYPTED_SEED: 'wallet_encrypted_seed' as StorageKey,
-  ENCRYPTED_ENTROPY: 'wallet_encrypted_entropy' as StorageKey,
-} as const
+// Secure storage keys (base keys without identifier)
+const ENCRYPTION_KEY = createStorageKey('wallet_encryption_key')
+const ENCRYPTED_SEED = createStorageKey('wallet_encrypted_seed')
+const ENCRYPTED_ENTROPY = createStorageKey('wallet_encrypted_entropy')
 
 /**
  * Authentication options for biometric prompts
@@ -90,14 +93,9 @@ export interface SecureStorage {
 }
 
 /**
- * Default timeout for keychain operations (30 seconds)
- */
-const DEFAULT_TIMEOUT_MS = 30000
-
-/**
  * Secure storage wrapper factory for wallet credentials
  * 
- * Uses react-native-keychain which provides encrypted storage with cloud sync.
+ * Uses react-native-keychain which provides encrypted storage with selective cloud sync.
  * Creates a new instance each time it's called, allowing different configurations
  * for different use cases. For most apps, you should create one instance and reuse it.
  * 
@@ -106,12 +104,14 @@ const DEFAULT_TIMEOUT_MS = 30000
  * - iOS: Uses Keychain Services with iCloud Keychain sync (when user signed into iCloud)
  * - Android: Uses KeyStore with Google Cloud backup (when device backup enabled)
  * - Data is ALWAYS encrypted at rest by Keychain (iOS) / KeyStore (Android)
- * - Cloud sync: ACCESSIBLE.WHEN_UNLOCKED enables iCloud Keychain sync (iOS) and Google Cloud backup (Android)
+ * - Cloud sync behavior:
+ *   - Encryption key: ACCESSIBLE.WHEN_UNLOCKED enables iCloud Keychain sync (iOS) and Google Cloud backup (Android)
+ *   - Encrypted seed and entropy: ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY prevents cloud sync (device-only storage)
  * - Data is encrypted by Apple/Google's E2EE infrastructure
  * - Encryption key requires device unlock + biometric/PIN authentication to access (when available)
  * - Encrypted seed and entropy do not require authentication but are still encrypted at rest
  * - On devices without authentication, data is still encrypted at rest but accessible when device is unlocked
- * - Rate limiting prevents brute force attacks
+ * - Device-level keychain/keystore provides rate limiting and lockout mechanisms
  * - Input validation prevents injection attacks
  * 
  * Two different apps will NOT share data because storage is isolated by bundle ID/package name.
@@ -135,49 +135,35 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
   const authOptions = options?.authentication || {}
   
   // Validate timeout value if provided
-  const requestedTimeout = options?.timeoutMs
-  if (requestedTimeout !== undefined) {
-    if (typeof requestedTimeout !== 'number' || isNaN(requestedTimeout) || !isFinite(requestedTimeout)) {
-      throw new ValidationError(`Invalid timeout value: ${requestedTimeout}. Must be a finite number.`)
-    }
-    if (requestedTimeout < MIN_TIMEOUT_MS) {
-      throw new ValidationError(`Timeout ${requestedTimeout}ms is too short. Minimum is ${MIN_TIMEOUT_MS}ms.`)
-    }
-    if (requestedTimeout > MAX_TIMEOUT_MS) {
-      throw new ValidationError(`Timeout ${requestedTimeout}ms is too long. Maximum is ${MAX_TIMEOUT_MS}ms.`)
-    }
-  }
+  const requestedTimeout = validateTimeout(options?.timeoutMs)
   
   // Validate authentication options if provided
-  if (authOptions) {
-    if (authOptions.promptMessage !== undefined) {
-      if (typeof authOptions.promptMessage !== 'string') {
-        throw new ValidationError('Authentication promptMessage must be a string')
-      }
-      if (authOptions.promptMessage.trim().length === 0) {
-        throw new ValidationError('Authentication promptMessage cannot be empty')
-      }
-    }
-    if (authOptions.cancelLabel !== undefined) {
-      if (typeof authOptions.cancelLabel !== 'string') {
-        throw new ValidationError('Authentication cancelLabel must be a string')
-      }
-      if (authOptions.cancelLabel.trim().length === 0) {
-        throw new ValidationError('Authentication cancelLabel cannot be empty')
-      }
-    }
-    if (authOptions.disableDeviceFallback !== undefined) {
-      if (typeof authOptions.disableDeviceFallback !== 'boolean') {
-        throw new ValidationError('Authentication disableDeviceFallback must be a boolean')
-      }
-    }
-  }
+  validateAuthenticationOptions(authOptions)
   
   const timeoutMs = requestedTimeout || DEFAULT_TIMEOUT_MS
 
+  // Cache for device authentication availability (per instance)
+  // Cache expires after TTL to handle device settings changes
+  let deviceAuthAvailableCache: { value: boolean; timestamp: number } | null = null
+
+  /**
+   * Error log message generators for consistent error handling
+   */
+  const getErrorLogMessage = (error: SecureStorageError, operation: string): string => {
+    if (error instanceof AuthenticationError) {
+      return `Authentication failed for ${operation}`
+    }
+    if (error instanceof TimeoutError) {
+      return `Timeout during ${operation}`
+    }
+    if (error instanceof ValidationError) {
+      return `Validation error during ${operation}`
+    }
+    return `Failed to ${operation}`
+  }
+
   /**
    * Standardized error handling helper
-   * Ensures consistent error handling pattern across all operations
    * 
    * @param error - The error to handle
    * @param operation - Name of the operation for logging
@@ -192,29 +178,15 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
     errorType: new (message: string, cause?: Error) => T,
     context?: Record<string, unknown>
   ): never {
-    // Check most specific error types first
-    if (error instanceof AuthenticationError) {
-      logger.error(`Authentication failed for ${operation}`, error, context)
-      throw error
-    }
-    if (error instanceof TimeoutError) {
-      logger.error(`Timeout during ${operation}`, error, { ...context, timeoutMs })
-      throw error
-    }
-    if (error instanceof ValidationError) {
-      logger.error(`Validation error during ${operation}`, error, context)
-      throw error
-    }
-    // Then check generic SecureStorageError
     if (error instanceof SecureStorageError) {
-      logger.error(`Failed to ${operation}`, error, context)
+      const errorContext =
+        error instanceof TimeoutError ? { ...context, timeoutMs } : context
+      logger.error(getErrorLogMessage(error, operation), error, errorContext)
       throw error
     }
-    // Finally, wrap unexpected errors
-    const wrappedError = new errorType(
-      `Unexpected error during ${operation}`,
-      error as Error
-    )
+
+    const err = error instanceof Error ? error : new Error(String(error))
+    const wrappedError = new errorType(`Unexpected error during ${operation}`, err)
     logger.error(`Unexpected error during ${operation}`, wrappedError, context)
     throw wrappedError
   }
@@ -223,86 +195,117 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
    * Check if device authentication is available
    * This includes biometrics OR device PIN/password
    * 
+   * Results are cached per instance with a 5-minute TTL to avoid repeated async calls
+   * while allowing cache invalidation when device settings change.
+   * 
    * @returns Promise that resolves to true if device authentication is available, false otherwise
    * @internal
    */
   async function isDeviceAuthenticationAvailable(): Promise<boolean> {
+    const now = Date.now()
+    
+    // Return cached value if available and not expired
+    if (deviceAuthAvailableCache !== null && (now - deviceAuthAvailableCache.timestamp) < DEVICE_AUTH_CACHE_TTL_MS) {
+      return deviceAuthAvailableCache.value
+    }
+
     try {
       const isEnrolled = await LocalAuthentication.isEnrolledAsync()
+      deviceAuthAvailableCache = { value: isEnrolled, timestamp: now }
       return isEnrolled
     } catch (error) {
-      logger.error('Failed to check device authentication availability', error as Error)
+      const err = error instanceof Error ? error : new Error(String(error))
+      logger.error('Failed to check device authentication availability', err, {})
+      deviceAuthAvailableCache = { value: false, timestamp: now }
       return false
     }
   }
 
+
   /**
-   * Create keychain options with conditional access control
-   * 
-   * @param deviceAuthAvailable - Whether device authentication (biometrics/PIN) is available
-   * @param requireAuth - Whether authentication should be required for this operation
-   * @returns Keychain options object with appropriate access control settings
-   * @internal
+   * Check if biometric authentication is available
    */
-  function createKeychainOptions(deviceAuthAvailable: boolean, requireAuth: boolean = true): Parameters<typeof Keychain.setGenericPassword>[2] {
-    return {
-      accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
-      ...(requireAuth && deviceAuthAvailable && {
-        accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY_OR_DEVICE_PASSCODE
-      }),
-    }
+  async function checkBiometricAvailable(): Promise<boolean> {
+    try {
+      const compatible = await LocalAuthentication.hasHardwareAsync()
+      const enrolled = await LocalAuthentication.isEnrolledAsync()
+      return compatible && enrolled
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        logger.error('Failed to check biometric availability', err, {})
+        return false
+      }
+  }
+
+  /**
+   * Authenticate with biometrics
+   * 
+   * @returns true if authentication succeeded, false otherwise
+   */
+  async function performAuthentication(): Promise<boolean> {
+    try {
+      const options = {
+        promptMessage: authOptions.promptMessage || 'Authenticate to access your wallet',
+        cancelLabel: authOptions.cancelLabel || 'Cancel',
+        disableDeviceFallback: authOptions.disableDeviceFallback ?? false,
+      }
+
+      logger.debug('Starting biometric authentication')
+
+      const result = await LocalAuthentication.authenticateAsync(options)
+
+      if (result.success) {
+        logger.info('Biometric authentication successful')
+        return true
+      } else {
+        logger.warn('Biometric authentication failed or cancelled')
+        return false
+      }
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        const authError = new AuthenticationError('Biometric authentication failed', err)
+        logger.error('Biometric authentication error', authError, {})
+        throw authError
+      }
   }
 
   /**
    * Authenticate if device supports it
    * Returns true if authentication succeeded or was skipped (device doesn't support auth)
    * Returns false if authentication was required but failed
-   * 
-   * @throws {AuthenticationError} If rate limit exceeded
    */
-  async function authenticateIfAvailable(
-    storage: SecureStorage,
-    identifier?: string
-  ): Promise<boolean> {
-    try {
-      checkRateLimit(identifier)
-    } catch (error) {
-      if (error instanceof AuthenticationError) {
-        throw error
-      }
-      throw new AuthenticationError('Rate limit check failed', error as Error)
-    }
-
+  async function authenticateIfAvailable(identifier?: string): Promise<boolean> {
+    // Check device auth first (cached) to avoid duplicate isEnrolledAsync calls
     const deviceAuthAvailable = await isDeviceAuthenticationAvailable()
     if (!deviceAuthAvailable) {
-      return true // Skip auth if not available
+      return true // No auth available, skip
     }
 
-    const biometricAvailable = await storage.isBiometricAvailable()
-    if (biometricAvailable) {
-      const authenticated = await storage.authenticate()
-      if (authenticated) {
-        recordSuccess(identifier)
-        logger.info('Authentication successful', { identifier })
-      } else {
-        recordFailedAttempt(identifier)
-        logger.warn('Authentication failed', { identifier })
-      }
-      return authenticated
+    // Device auth is available, check if biometrics are available
+    const biometricAvailable = await checkBiometricAvailable()
+    if (!biometricAvailable) {
+      // Device has PIN/password but no biometrics - proceed without prompt
+      return true
     }
 
-    return true // Device auth available but not biometric
+    // Biometrics available, attempt authentication
+    const authenticated = await performAuthentication()
+    if (authenticated) {
+      logger.info('Authentication successful', { identifier })
+    } else {
+      logger.warn('Authentication failed', { identifier })
+    }
+    return authenticated
   }
 
   /**
    * Generic setter for secure values
    * 
-   * Stores a secure value in keychain storage with appropriate access control.
-   * 
    * @param baseKey - The base storage key (e.g., ENCRYPTION_KEY)
    * @param value - The value to store (must be non-empty string, max 10KB)
    * @param identifier - Optional identifier for multiple wallets
-   * @param requireAuth - Whether authentication should be required for access (default: true)
+   * @param requireAuth - Whether authentication should be required (default: true)
+   * @param syncable - Whether the value should sync across devices (default: true)
    * @throws {ValidationError} If input validation fails
    * @throws {KeychainWriteError} If keychain operation fails
    * @throws {TimeoutError} If operation times out
@@ -312,25 +315,25 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
     baseKey: StorageKey,
     value: string,
     identifier?: string,
-    requireAuth: boolean = true
+    requireAuth: boolean = true,
+    syncable: boolean = true
   ): Promise<void> {
-    // Validate inputs
     validateValue(value, 'value')
     validateIdentifier(identifier)
 
     try {
-      const deviceAuthAvailable = await isDeviceAuthenticationAvailable()
-      const storageKey = await getStorageKey(baseKey, identifier)
+      const [deviceAuthAvailable, storageKey] = await Promise.all([
+        isDeviceAuthenticationAvailable(),
+        getStorageKey(baseKey, identifier),
+      ])
 
-      logger.debug('Storing secure value', { baseKey, hasIdentifier: !!identifier, requireAuth })
-
-      const keychainPromise = Keychain.setGenericPassword(baseKey, value, {
-        service: storageKey,
-        ...createKeychainOptions(deviceAuthAvailable, requireAuth),
-      })
+      logger.debug('Storing secure value', { baseKey, identifier, requireAuth, syncable })
 
       const result = await withTimeout(
-        keychainPromise,
+        Keychain.setGenericPassword(baseKey, value, {
+          service: storageKey,
+          ...createKeychainOptions(deviceAuthAvailable, requireAuth, syncable),
+        }),
         timeoutMs,
         `setSecureValue(${baseKey})`
       )
@@ -339,18 +342,13 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
         throw new KeychainWriteError(`Failed to store ${baseKey}`)
       }
 
-      logger.info('Secure value stored successfully', { baseKey, hasIdentifier: !!identifier })
+      logger.info('Secure value stored successfully', { baseKey, identifier })
     } catch (error) {
       handleSecureStorageError(
         error,
         `store ${baseKey}`,
         KeychainWriteError,
-        { 
-          identifier, 
-          baseKey,
-          hasIdentifier: identifier !== undefined && identifier !== null,
-          requireAuth,
-        }
+        { identifier, baseKey, requireAuth, syncable }
       )
     }
   }
@@ -361,7 +359,7 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
    * 
    * @param storageKey - The storage key to check
    * @returns true if key exists with valid password, false if not found
-   * @throws {KeychainReadError} If keychain operation fails
+   * @throws {KeychainReadError} If keychain operation fails (not just "key not found")
    * @throws {TimeoutError} If operation times out
    * @internal
    */
@@ -375,21 +373,14 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
         timeoutMs,
         `checkKeyExists(${storageKey})`
       )
-      // Strict validation: credentials must be an object with a non-empty password field
-      // Keychain.getGenericPassword returns false when key doesn't exist
-      // It returns an object with {username, password} when key exists
-      // It may return null in some edge cases
-      const exists = credentials !== false && 
-                     credentials !== null && 
-                     typeof credentials === 'object' &&
-                     'password' in credentials &&
-                     typeof credentials.password === 'string' &&
-                     credentials.password.length > 0
-      
-      return exists
+      // Keychain.getGenericPassword returns:
+      // - false when key doesn't exist (not an error, just missing)
+      // - {username, password} object when key exists
+      // - null in some edge cases (treat as not found)
+      return isKeychainCredentials(credentials)
     } catch (error) {
-      // Re-throw keychain errors - these are real failures that should be propagated
-      // Only return false when getGenericPassword returns false (key doesn't exist)
+      // Any exception here indicates a real keychain failure (not just "key not found")
+      // These should be propagated as errors, not treated as "key doesn't exist"
       handleSecureStorageError(
         error,
         `check key existence (${storageKey})`,
@@ -402,16 +393,12 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
   /**
    * Generic getter for secure values
    * 
-   * Retrieves a secure value from keychain storage. If authentication is required,
-   * it will prompt the user for biometric authentication before retrieving the value.
-   * 
    * @param baseKey - The base storage key (e.g., ENCRYPTION_KEY)
    * @param identifier - Optional identifier for multiple wallets
-   * @param storage - The SecureStorage instance (for authentication)
    * @param requireAuth - Whether authentication is required (default: true)
    * @returns The stored value, or null if not found
    * @throws {ValidationError} If identifier validation fails
-   * @throws {AuthenticationError} If authentication fails or rate limit exceeded. Note: This is thrown when authentication is required but fails, not when the key is simply not found (which returns null).
+   * @throws {AuthenticationError} If authentication fails (when required)
    * @throws {KeychainReadError} If keychain operation fails
    * @throws {TimeoutError} If operation times out
    * @internal
@@ -419,66 +406,38 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
   async function getSecureValue(
     baseKey: StorageKey,
     identifier: string | undefined,
-    storage: SecureStorage,
     requireAuth: boolean = true
   ): Promise<string | null> {
-    // Validate identifier
     validateIdentifier(identifier)
 
     try {
-      if (requireAuth) {
-        const authenticated = await authenticateIfAvailable(storage, identifier)
-        if (!authenticated) {
-          // Authentication failed - throw error instead of returning null
-          // This allows calling code to distinguish between auth failure (don't delete wallet)
-          // and key not found (different scenario)
-          const authError = new AuthenticationError(
-            'Authentication required but failed',
-            undefined
-          )
-          logger.warn('Authentication required but failed', { baseKey, identifier })
-          throw authError
-        }
+      if (requireAuth && !(await authenticateIfAvailable(identifier))) {
+        logger.warn('Authentication required but failed', { baseKey, identifier })
+        throw new AuthenticationError('Authentication required but failed')
       }
 
       const storageKey = await getStorageKey(baseKey, identifier)
-
-      logger.debug('Retrieving secure value', { baseKey, hasIdentifier: !!identifier })
-
-      const keychainPromise = Keychain.getGenericPassword({
-        service: storageKey,
-      })
+      logger.debug('Retrieving secure value', { baseKey, identifier })
 
       const credentials = await withTimeout(
-        keychainPromise,
+        Keychain.getGenericPassword({ service: storageKey }),
         timeoutMs,
         `getSecureValue(${baseKey})`
       )
 
-      if (credentials === false || !credentials || typeof credentials !== 'object' || !('password' in credentials)) {
-        logger.debug('Secure value not found', { baseKey, hasIdentifier: !!identifier })
+      if (!isKeychainCredentials(credentials)) {
+        logger.debug('Secure value not found', { baseKey, identifier })
         return null
       }
 
-      // Validate that password exists and is a string
-      if (typeof credentials.password !== 'string') {
-        logger.warn('Keychain returned invalid password type', { baseKey, hasIdentifier: !!identifier })
-        return null
-      }
-
-      logger.info('Secure value retrieved successfully', { baseKey, hasIdentifier: !!identifier })
+      logger.info('Secure value retrieved successfully', { baseKey, identifier })
       return credentials.password
     } catch (error) {
       handleSecureStorageError(
         error,
         `get ${baseKey}`,
         KeychainReadError,
-        { 
-          identifier, 
-          baseKey,
-          hasIdentifier: identifier !== undefined && identifier !== null,
-          requireAuth,
-        }
+        { identifier, baseKey, requireAuth }
       )
     }
   }
@@ -489,54 +448,16 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * Check if biometric authentication is available
      */
     async isBiometricAvailable(): Promise<boolean> {
-      try {
-        const compatible = await LocalAuthentication.hasHardwareAsync()
-        const enrolled = await LocalAuthentication.isEnrolledAsync()
-        return compatible && enrolled
-      } catch (error) {
-        logger.error('Failed to check biometric availability', error as Error)
-        return false
-      }
+      return checkBiometricAvailable()
     },
 
     /**
      * Authenticate with biometrics
      * 
-     * @throws {AuthenticationError} If rate limit exceeded
      * @returns true if authentication succeeded, false otherwise
      */
     async authenticate(): Promise<boolean> {
-      try {
-        checkRateLimit()
-
-        const options = {
-          promptMessage: authOptions.promptMessage || 'Authenticate to access your wallet',
-          cancelLabel: authOptions.cancelLabel || 'Cancel',
-          disableDeviceFallback: authOptions.disableDeviceFallback ?? false,
-        }
-
-        logger.debug('Starting biometric authentication')
-
-        const result = await LocalAuthentication.authenticateAsync(options)
-
-        if (result.success) {
-          recordSuccess()
-          logger.info('Biometric authentication successful')
-          return true
-        } else {
-          recordFailedAttempt()
-          logger.warn('Biometric authentication failed or cancelled')
-          return false
-        }
-      } catch (error) {
-        recordFailedAttempt()
-        if (error instanceof AuthenticationError) {
-          throw error
-        }
-        const authError = new AuthenticationError('Biometric authentication failed', error as Error)
-        logger.error('Biometric authentication error', authError)
-        throw authError
-      }
+      return performAuthentication()
     },
 
     /**
@@ -544,27 +465,12 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * 
      * @param key - The encryption key to store (must be non-empty string, max 10KB)
      * @param identifier - Optional identifier (e.g., email) to support multiple wallets
-     * 
-     * @throws {ValidationError} If key is invalid (empty, too long, wrong type)
-     * @throws {ValidationError} If identifier is invalid format
+     * @throws {ValidationError} If key or identifier is invalid
      * @throws {KeychainWriteError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
-     * 
-     * @example
-     * ```typescript
-     * try {
-     *   await storage.setEncryptionKey('my-key', 'user@example.com')
-     * } catch (error) {
-     *   if (error instanceof ValidationError) {
-     *     // Handle validation error
-     *   } else if (error instanceof KeychainWriteError) {
-     *     // Handle keychain error
-     *   }
-     * }
-     * ```
      */
     async setEncryptionKey(key: string, identifier?: string): Promise<void> {
-      return setSecureValue(STORAGE_KEYS.ENCRYPTION_KEY, key, identifier)
+      return setSecureValue(ENCRYPTION_KEY, key, identifier, true, true)
     },
 
     /**
@@ -574,12 +480,12 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @returns The encryption key, or null if not found
      * 
      * @throws {ValidationError} If identifier is invalid format
-     * @throws {AuthenticationError} If authentication fails or rate limit exceeded
+     * @throws {AuthenticationError} If authentication fails
      * @throws {KeychainReadError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
      */
     async getEncryptionKey(identifier?: string): Promise<string | null> {
-      return getSecureValue(STORAGE_KEYS.ENCRYPTION_KEY, identifier, this)
+      return getSecureValue(ENCRYPTION_KEY, identifier)
     },
 
     /**
@@ -593,10 +499,10 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {KeychainWriteError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
      * 
-     * Note: Encrypted seed does not require authentication for access
+     * Note: Encrypted seed does not require authentication for access and is stored device-only (not synced across devices)
      */
     async setEncryptedSeed(encryptedSeed: string, identifier?: string): Promise<void> {
-      return setSecureValue(STORAGE_KEYS.ENCRYPTED_SEED, encryptedSeed, identifier, false)
+      return setSecureValue(ENCRYPTED_SEED, encryptedSeed, identifier, false, false)
     },
 
     /**
@@ -609,10 +515,10 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {KeychainReadError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
      * 
-     * Note: Encrypted seed does not require authentication for access
+     * Note: Encrypted seed does not require authentication for access and is stored device-only (not synced across devices)
      */
     async getEncryptedSeed(identifier?: string): Promise<string | null> {
-      return getSecureValue(STORAGE_KEYS.ENCRYPTED_SEED, identifier, this, false)
+      return getSecureValue(ENCRYPTED_SEED, identifier, false)
     },
 
     /**
@@ -626,10 +532,10 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {KeychainWriteError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
      * 
-     * Note: Encrypted entropy does not require authentication for access
+     * Note: Encrypted entropy does not require authentication for access and is stored device-only (not synced across devices)
      */
     async setEncryptedEntropy(encryptedEntropy: string, identifier?: string): Promise<void> {
-      return setSecureValue(STORAGE_KEYS.ENCRYPTED_ENTROPY, encryptedEntropy, identifier, false)
+      return setSecureValue(ENCRYPTED_ENTROPY, encryptedEntropy, identifier, false, false)
     },
 
     /**
@@ -642,20 +548,20 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {KeychainReadError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
      * 
-     * Note: Encrypted entropy does not require authentication for access
+     * Note: Encrypted entropy does not require authentication for access and is stored device-only (not synced across devices)
      */
     async getEncryptedEntropy(identifier?: string): Promise<string | null> {
-      return getSecureValue(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier, this, false)
+      return getSecureValue(ENCRYPTED_ENTROPY, identifier, false)
     },
 
     /**
      * Get all encrypted wallet data at once (seed, entropy, and encryption key)
+     * Uses Promise.all, so fails fast if any operation fails.
      * 
      * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      * @returns Object containing seed, entropy, and encryptionKey (may be null if not found)
-     * 
      * @throws {ValidationError} If identifier is invalid format
-     * @throws {AuthenticationError} If authentication fails or rate limit exceeded
+     * @throws {AuthenticationError} If authentication fails
      * @throws {KeychainReadError} If keychain operation fails
      * @throws {TimeoutError} If operation times out
      */
@@ -664,8 +570,6 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
       encryptedEntropy: string | null
       encryptionKey: string | null
     }> {
-      validateIdentifier(identifier)
-
       const [encryptedSeed, encryptedEntropy, encryptionKey] = await Promise.all([
         this.getEncryptedSeed(identifier),
         this.getEncryptedEntropy(identifier),
@@ -680,65 +584,28 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
     },
 
     /**
-     * Check if wallet credentials exist
-     * 
-     * This method checks for wallet existence without requiring authentication.
-     * It returns false only when the wallet is definitively not found.
-     * Any errors (timeouts, keychain failures, etc.) are thrown rather than
-     * returning false, allowing callers to distinguish between "not found"
-     * and "error occurred".
+     * Check if wallet credentials exist (without requiring authentication)
+     * Returns false only when wallet is definitively not found. Errors are thrown.
      * 
      * @param identifier - Optional identifier (e.g., email) to support multiple wallets
      * @returns true if wallet exists, false if definitively not found
-     * 
      * @throws {ValidationError} If identifier is invalid format
      * @throws {TimeoutError} If operation times out
-     * @throws {KeychainReadError} If keychain operation fails unexpectedly
-     * 
-     * @example
-     * ```typescript
-     * try {
-     *   const exists = await storage.hasWallet('user@example.com')
-     *   if (exists) {
-     *     // Wallet exists
-     *   } else {
-     *     // Wallet does not exist
-     *   }
-     * } catch (error) {
-     *   // Handle error (timeout, keychain failure, etc.)
-     * }
-     * ```
+     * @throws {KeychainReadError} If keychain operation fails
      */
     async hasWallet(identifier?: string): Promise<boolean> {
-      validateIdentifier(identifier)
+      // Batch storage key generation for efficiency
+      const [seedStorageKey, encryptionKeyStorageKey] = await Promise.all([
+        getStorageKey(ENCRYPTED_SEED, identifier),
+        getStorageKey(ENCRYPTION_KEY, identifier),
+      ])
 
-      // Check if encrypted seed exists and is not null (without authentication)
-      // We're checking existence AND that the value is not null/empty
-      const seedStorageKey = await getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
-      const seedExists = await checkKeyExists(seedStorageKey)
-      
-      if (!seedExists) {
-        logger.debug('hasWallet: Encrypted seed not found or is null', { identifier })
+      // Short-circuit: if seed doesn't exist, no need to check encryption key
+      if (!(await checkKeyExists(seedStorageKey))) {
         return false
       }
 
-      // Also check encryption key exists and is not null
-      // Note: For encryption key, we can't read it without auth, but we can check existence
-      // The checkKeyExists function verifies the password field exists and is non-empty
-      const encryptionKeyStorageKey = await getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
-      const encryptionKeyExists = await checkKeyExists(encryptionKeyStorageKey)
-      
-      if (!encryptionKeyExists) {
-        logger.debug('hasWallet: Encryption key not found or is null', { identifier })
-        return false
-      }
-
-      // Both keys exist and have non-empty values (verified by checkKeyExists)
-      // We skip the final verification step that calls getEncryptedSeed() to avoid
-      // any potential keychain access that might trigger biometric authentication
-      // checkKeyExists already verifies the password field exists and is non-empty
-      logger.debug('hasWallet: Wallet exists and values are not null', { identifier })
-      return true
+      return await checkKeyExists(encryptionKeyStorageKey)
     },
 
     /**
@@ -751,22 +618,20 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
      * @throws {TimeoutError} If operation times out
      */
     async deleteWallet(identifier?: string): Promise<void> {
-      validateIdentifier(identifier)
+      // Batch storage key generation
+      const [encryptionKey, encryptedSeed, encryptedEntropy] = await Promise.all([
+        getStorageKey(ENCRYPTION_KEY, identifier),
+        getStorageKey(ENCRYPTED_SEED, identifier),
+        getStorageKey(ENCRYPTED_ENTROPY, identifier),
+      ])
 
-      const encryptionKey = await getStorageKey(STORAGE_KEYS.ENCRYPTION_KEY, identifier)
-      const encryptedSeed = await getStorageKey(STORAGE_KEYS.ENCRYPTED_SEED, identifier)
-      const encryptedEntropy = await getStorageKey(STORAGE_KEYS.ENCRYPTED_ENTROPY, identifier)
+      const serviceKeys = [encryptionKey, encryptedSeed, encryptedEntropy]
+      const serviceNames = ['encryptionKey', 'encryptedSeed', 'encryptedEntropy']
 
-      const services = [
-        { name: 'encryptionKey', key: encryptionKey },
-        { name: 'encryptedSeed', key: encryptedSeed },
-        { name: 'encryptedEntropy', key: encryptedEntropy },
-      ]
-
-      logger.debug('Deleting wallet', { identifier, services: services.map(s => s.name) })
+      logger.debug('Deleting wallet', { identifier, services: serviceNames })
 
       const results = await Promise.allSettled(
-        services.map(({ key }) =>
+        serviceKeys.map((key) =>
           withTimeout(
             Keychain.resetGenericPassword({ service: key }),
             timeoutMs,
@@ -775,23 +640,17 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
         )
       )
 
-      const failures = results
-        .map((result, index) => ({ result, service: services[index] }))
-        .filter(
-          ({ result }) =>
-            result.status === 'rejected' || (result.status === 'fulfilled' && result.value === false)
-        )
+      const failedServices = serviceNames.filter((_, index) => {
+        const result = results[index]
+        return result.status === 'rejected' || (result.status === 'fulfilled' && result.value === false)
+      })
 
-      if (failures.length > 0) {
-        const failedServices = failures.map((f) => f.service ? f.service.name : 'unknown').join(', ')
+      if (failedServices.length > 0) {
         const error = new SecureStorageError(
-          `Failed to delete wallet: ${failedServices}`,
+          `Failed to delete wallet: ${failedServices.join(', ')}`,
           'WALLET_DELETE_ERROR'
         )
-        logger.error('Wallet deletion failed', error, {
-          identifier,
-          failedServices: failures.map((f) => f.service ? f.service.name : 'unknown'),
-        })
+        logger.error('Wallet deletion failed', error, { identifier, failedServices })
         throw error
       }
 
@@ -801,13 +660,10 @@ export function createSecureStorage(options?: SecureStorageOptions): SecureStora
     /**
      * Cleanup method to release resources associated with this storage instance
      * 
-     * Currently, this is a no-op as the module uses shared resources (rate limiter,
-     * periodic cleanup) that are managed at the module level. This method is provided
+     * Currently, this is a no-op as the module uses shared resources. This method is provided
      * for future extensibility and to maintain a consistent API.
      * 
      * Note: This does NOT delete stored wallet data - use deleteWallet() for that purpose.
-     * Also, this does NOT stop the module-level periodic cleanup interval - that is
-     * managed separately via __cleanupModule() in utils.ts.
      */
     cleanup(): void {
       // Currently a no-op, but provided for future extensibility

@@ -21,6 +21,9 @@ export class SecureStorageError extends Error {
 
 /**
  * Error thrown when keychain operations fail
+ * 
+ * Note: This is a base error class for completeness. In practice, use
+ * KeychainWriteError or KeychainReadError for more specific error handling.
  */
 export class KeychainError extends SecureStorageError {
   constructor(message: string, cause?: Error) {
